@@ -1,0 +1,27 @@
+{
+  "id": "rail-network",
+  "title": "Rail Network",
+  "description": "Animate train tokens along drawn routes based on in-game time. Supports configurable schedules, events (delays, blockages, closures), and optional Calendaria integration.",
+  "version": "0.1.0",
+  "authors": [
+    {
+      "name": "jtdoepke"
+    }
+  ],
+  "compatibility": {
+    "minimum": "13",
+    "verified": "14"
+  },
+  "esmodules": [
+    "scripts/integration.mjs"
+  ],
+  "relationships": {
+    "optional": [
+      { "id": "sequencer", "type": "module" },
+      { "id": "calendaria", "type": "module" }
+    ]
+  },
+  "url": "https://github.com/jtdoepke/fvtt-rail-network",
+  "manifest": "",
+  "download": ""
+}

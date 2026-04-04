@@ -1,0 +1,38 @@
+name: Release Module
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: get-version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Update module.json with version and URLs
+        run: |
+          jq --arg v "${{ steps.get-version.outputs.version }}" \
+             --arg dl "https://github.com/${{ github.repository }}/releases/download/${{ github.event.release.tag_name }}/module.zip" \
+             --arg manifest "https://github.com/${{ github.repository }}/releases/latest/download/module.json" \
+             '. + {version: $v, download: $dl, manifest: $manifest}' \
+             module.json > tmp.json && mv tmp.json module.json
+
+      - name: Create module.zip
+        run: zip -r module.zip module.json scripts/
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            module.json \
+            module.zip \
+            --clobber
