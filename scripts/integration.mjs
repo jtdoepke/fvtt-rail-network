@@ -205,13 +205,12 @@ async function updateAllTrains(worldTime) {
 
     for (const [key, desired] of desiredByKey) {
       const existing = existingByKey.get(key);
-      // Grid snap
-      let { x, y } = desired;
-      if (canvas.grid?.getSnappedPoint) {
-        const snapped = canvas.grid.getSnappedPoint({ x, y });
-        x = snapped.x;
-        y = snapped.y;
-      }
+      // Center the token on the path point (x,y is the token's top-left corner)
+      const gridSize = canvas.grid?.size ?? 100;
+      const halfW = (desired.width * gridSize) / 2;
+      const halfH = (desired.height * gridSize) / 2;
+      let x = desired.x - halfW;
+      let y = desired.y - halfH;
 
       if (!existing) {
         toCreate.push({
@@ -346,6 +345,33 @@ function buildSegmentOptions(selectedId) {
     const sel = sid === selectedId ? " selected" : "";
     return `<option value="${sid}"${sel}>${sid}</option>`;
   }).join("");
+}
+
+/** Get station names for a given route by resolving its segment paths. */
+function getRouteStationNames(route) {
+  const path = resolveRouteWithDrawings(route, game.time.worldTime);
+  return path.filter(n => n.station).map(n => n.station);
+}
+
+/** Build departure time options for a route's schedule, formatted readably. */
+function buildDepartureOptions(route, selectedTime) {
+  const { departureHours, intervalDays, startDayOffset } = route.schedule;
+  const worldTime = game.time.worldTime;
+  const currentDay = Math.floor(worldTime / 86400);
+  const options = [];
+  // Show departures for a window of days around now
+  for (let dayOff = -intervalDays; dayOff <= intervalDays * 2; dayOff++) {
+    const day = currentDay + dayOff;
+    const cycleDelta = day - (startDayOffset ?? 0);
+    const mod = ((cycleDelta % intervalDays) + intervalDays) % intervalDays;
+    if (mod !== 0) continue;
+    for (const hour of departureHours) {
+      const depTime = day * 86400 + hour * 3600;
+      const sel = depTime === selectedTime ? " selected" : "";
+      options.push(`<option value="${depTime}"${sel}>${formatWorldTime(depTime)}</option>`);
+    }
+  }
+  return options.join("");
 }
 
 // ---------------------------------------------------------------------------
@@ -558,7 +584,30 @@ const api = {
       return String(t);
     };
 
+    // Build station and departure options for the initially selected route
+    const selectedRoute = existing?.target?.routeId
+      ? routes.find(r => r.id === existing.target.routeId)
+      : routes[0];
+    const stationNames = selectedRoute ? getRouteStationNames(selectedRoute) : [];
+    const stationOptions = stationNames.map(s => {
+      const sel = s === existing?.target?.stationName ? " selected" : "";
+      return `<option value="${s}"${sel}>${s}</option>`;
+    }).join("");
+    const departureOptions = selectedRoute
+      ? buildDepartureOptions(selectedRoute, existing?.target?.departureTime)
+      : "";
+
+    // Which fields are visible per event type
+    // stationName: blockTrack, halt, extraDeparture
+    // departureTime: delay, destroy, halt
+    // delayHours + recoveryRate: delay
+    const selectedType = existing?.type ?? "closeLine";
+
     const content = `
+      <style>
+        .rail-event-field { transition: opacity 0.15s; }
+        .rail-event-field.hidden { display: none; }
+      </style>
       <form>
         <div class="form-group">
           <label>Route</label>
@@ -568,29 +617,36 @@ const api = {
           <label>Event Type</label>
           <select name="type">${typeOptions}</select>
         </div>
-        <div class="form-group">
-          <label>Station Name</label>
-          <input type="text" name="stationName" value="${existing?.target?.stationName ?? ""}" placeholder="For blockTrack, halt, extraDeparture">
+        <div class="form-group rail-event-field" data-field="stationName">
+          <label>Station</label>
+          <select name="stationName">
+            <option value="">— select station —</option>
+            ${stationOptions}
+          </select>
         </div>
-        <div class="form-group">
-          <label>Departure Time</label>
-          <input type="number" name="departureTime" value="${existing?.target?.departureTime ?? ""}" placeholder="For delay, destroy, halt">
+        <div class="form-group rail-event-field" data-field="departureTime">
+          <label>Departure</label>
+          <select name="departureTime">
+            <option value="">— select departure —</option>
+            ${departureOptions}
+          </select>
         </div>
-        <div class="form-group">
+        <div class="form-group rail-event-field" data-field="delayHours">
           <label>Delay Hours</label>
-          <input type="number" name="delayHours" step="0.1" value="${existing?.delayHours ?? ""}" placeholder="For delay type">
+          <input type="number" name="delayHours" step="0.1" value="${existing?.delayHours ?? ""}" placeholder="Hours to delay">
         </div>
-        <div class="form-group">
+        <div class="form-group rail-event-field" data-field="recoveryRate">
           <label>Recovery Rate</label>
-          <input type="number" name="recoveryRate" step="0.1" value="${existing?.recoveryRate ?? ""}" placeholder="Hours recovered per hour">
+          <input type="number" name="recoveryRate" step="0.1" value="${existing?.recoveryRate ?? ""}" placeholder="Hours recovered per hour (optional)">
         </div>
         <div class="form-group">
           <label>Start Time</label>
-          <input type="text" name="startTime" value="${isEdit ? formatTime(existing.startTime) : "now"}" placeholder="'now', 'none', or timestamp">
+          <input type="text" name="startTime" value="${isEdit ? formatTime(existing.startTime) : "now"}" placeholder="'now', 'none', or world time seconds">
+          <p class="hint" style="font-size:0.8em;opacity:0.7;margin:2px 0 0;">Current world time: ${game.time.worldTime} (${formatWorldTime(game.time.worldTime)})</p>
         </div>
         <div class="form-group">
           <label>End Time</label>
-          <input type="text" name="endTime" value="${formatTime(existing?.endTime)}" placeholder="'none' or timestamp">
+          <input type="text" name="endTime" value="${formatTime(existing?.endTime)}" placeholder="'none' for permanent, or world time seconds">
         </div>
         <div class="form-group">
           <label>Reason</label>
@@ -603,9 +659,54 @@ const api = {
       </form>
     `;
 
+    // Field visibility rules per event type
+    const fieldVisibility = {
+      closeLine:       { stationName: false, departureTime: false, delayHours: false, recoveryRate: false },
+      blockTrack:      { stationName: true,  departureTime: false, delayHours: false, recoveryRate: false },
+      delay:           { stationName: false, departureTime: true,  delayHours: true,  recoveryRate: true  },
+      destroy:         { stationName: false, departureTime: true,  delayHours: false, recoveryRate: false },
+      halt:            { stationName: true,  departureTime: true,  delayHours: false, recoveryRate: false },
+      extraDeparture:  { stationName: true,  departureTime: false, delayHours: false, recoveryRate: false },
+    };
+
     const result = await foundry.applications.api.DialogV2.wait({
       window: { title: isEdit ? `Rail Network — Edit Event: ${eventId}` : "Rail Network — Create Event" },
       content,
+      render: (event, dialog) => {
+        const form = dialog.element.querySelector("form");
+        if (!form) return;
+
+        const updateFieldVisibility = () => {
+          const type = form.querySelector('select[name="type"]').value;
+          const rules = fieldVisibility[type] ?? {};
+          form.querySelectorAll(".rail-event-field").forEach(el => {
+            const field = el.dataset.field;
+            el.classList.toggle("hidden", !(rules[field] ?? false));
+          });
+        };
+
+        // Toggle fields on event type change
+        form.querySelector('select[name="type"]').addEventListener("change", updateFieldVisibility);
+
+        // Rebuild station + departure options on route change
+        form.querySelector('select[name="routeId"]').addEventListener("change", () => {
+          const routeId = form.querySelector('select[name="routeId"]').value;
+          const route = routes.find(r => r.id === routeId);
+          if (!route) return;
+
+          const names = getRouteStationNames(route);
+          const stationSel = form.querySelector('select[name="stationName"]');
+          stationSel.innerHTML = '<option value="">— select station —</option>' +
+            names.map(s => `<option value="${s}">${s}</option>`).join("");
+
+          const depSel = form.querySelector('select[name="departureTime"]');
+          depSel.innerHTML = '<option value="">— select departure —</option>' +
+            buildDepartureOptions(route);
+        });
+
+        // Set initial visibility
+        updateFieldVisibility();
+      },
       buttons: [
         {
           action: "save",
@@ -788,35 +889,50 @@ const api = {
     const existingStations = existingFlags.stations ?? [];
     const stationMap = new Map(existingStations.map(s => [s.pointIndex, s]));
 
+    // Pre-compute absolute positions for each point
+    const absPoints = [];
+    for (let i = 0; i < numPoints; i++) {
+      absPoints.push({
+        x: Math.round(doc.x + points[i * 2]),
+        y: Math.round(doc.y + points[i * 2 + 1]),
+      });
+    }
+
     let pointRows = "";
     for (let i = 0; i < numPoints; i++) {
-      const absX = Math.round(doc.x + points[i * 2]);
-      const absY = Math.round(doc.y + points[i * 2 + 1]);
+      const { x: absX, y: absY } = absPoints[i];
       const existing = stationMap.get(i);
       const checked = existing ? "checked" : "";
+      const disabled = existing ? "" : "disabled";
       const name = existing?.name ?? "";
       const hours = existing?.hoursFromPrev ?? "";
       const dwell = existing?.dwellMinutes ?? "";
 
       pointRows += `
-        <tr>
+        <tr data-point-index="${i}" data-point-x="${absX}" data-point-y="${absY}">
           <td>${i}</td>
           <td>(${absX}, ${absY})</td>
           <td><input type="checkbox" name="isStation_${i}" ${checked}></td>
-          <td><input type="text" name="name_${i}" value="${name}" size="12"></td>
-          <td><input type="number" name="hours_${i}" value="${hours}" step="0.1" size="6"></td>
-          <td><input type="number" name="dwell_${i}" value="${dwell}" step="1" size="4"></td>
+          <td><input type="text" name="name_${i}" value="${name}" size="12" placeholder="Station name" ${disabled}></td>
+          <td><input type="number" name="hours_${i}" value="${hours}" step="0.1" size="6" placeholder="Travel hrs" ${disabled}></td>
+          <td><input type="number" name="dwell_${i}" value="${dwell}" step="1" size="4" placeholder="Minutes" ${disabled}></td>
         </tr>
       `;
     }
 
     const content = `
+      <style>
+        .rail-segment-table thead { position: sticky; top: 0; background: var(--color-cool-5); z-index: 1; }
+        .rail-segment-table tbody tr:hover { background: rgba(255, 200, 0, 0.15); cursor: pointer; }
+        .rail-segment-table input:disabled { opacity: 0.3; }
+      </style>
       <form>
         <div class="form-group">
           <label>Segment ID</label>
-          <input type="text" name="segmentId" value="${existingFlags.segmentId ?? ""}" required>
+          <input type="text" name="segmentId" value="${existingFlags.segmentId ?? ""}" required
+                 placeholder="e.g. sharn-wroat">
         </div>
-        <table>
+        <table class="rail-segment-table">
           <thead>
             <tr><th>#</th><th>Position</th><th>Station?</th><th>Name</th><th>Hours from Prev</th><th>Dwell (min)</th></tr>
           </thead>
@@ -828,6 +944,50 @@ const api = {
     const result = await foundry.applications.api.DialogV2.wait({
       window: { title: "Rail Network — Tag Segment" },
       content,
+      // Foundry v14: position.top ensures dialog opens with content visible from the top
+      position: { top: 50 },
+      render: (event, html) => {
+        // Scroll to top on open
+        const scrollEl = html.querySelector?.(".window-content") ?? html.closest?.(".application")?.querySelector(".window-content");
+        if (scrollEl) scrollEl.scrollTop = 0;
+
+        const root = html.querySelector?.("form") ?? html;
+
+        // Toggle station fields when checkbox changes
+        root.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+          cb.addEventListener("change", (e) => {
+            const row = e.target.closest("tr");
+            const inputs = row.querySelectorAll('input:not([type="checkbox"])');
+            inputs.forEach(inp => inp.disabled = !e.target.checked);
+          });
+        });
+
+        // Highlight point on map when hovering a row
+        let highlightGraphic = null;
+        root.querySelectorAll("tbody tr").forEach(row => {
+          row.addEventListener("mouseenter", () => {
+            const px = Number(row.dataset.pointX);
+            const py = Number(row.dataset.pointY);
+            if (isNaN(px) || isNaN(py)) return;
+            // Draw a temporary highlight circle on the canvas
+            highlightGraphic = new PIXI.Graphics();
+            highlightGraphic.beginFill(0xffcc00, 0.6);
+            highlightGraphic.drawCircle(0, 0, 16);
+            highlightGraphic.endFill();
+            highlightGraphic.beginFill(0xffcc00, 0.2);
+            highlightGraphic.drawCircle(0, 0, 40);
+            highlightGraphic.endFill();
+            highlightGraphic.position.set(px, py);
+            canvas.controls.addChild(highlightGraphic);
+          });
+          row.addEventListener("mouseleave", () => {
+            if (highlightGraphic) {
+              highlightGraphic.destroy();
+              highlightGraphic = null;
+            }
+          });
+        });
+      },
       buttons: [
         {
           action: "save",
@@ -877,7 +1037,7 @@ const api = {
     for (let i = 0; i < depHours.length; i++) {
       depRows += `
         <div class="dep-row" style="display:flex;gap:4px;margin-bottom:4px;">
-          <input type="number" name="depHour_${i}" value="${depHours[i]}" step="0.5" min="0" max="24" style="width:80px;" placeholder="Hour">
+          <input type="number" name="depHour_${i}" value="${depHours[i]}" step="0.5" min="0" max="24" style="width:80px;" placeholder="Hour (0-24)">
           <input type="number" name="routeNum_${i}" value="${routeNums[i] ?? ""}" style="width:70px;" placeholder="Route #">
           <button type="button" class="remove-row" style="flex:0 0 auto;">✕</button>
         </div>`;
@@ -908,8 +1068,11 @@ const api = {
           <input type="text" name="id" value="${existing?.id ?? ""}" ${isEdit ? "readonly" : ""} required>
         </div>
         <div class="form-group">
-          <label>Scene ID (optional)</label>
-          <input type="text" name="sceneId" value="${existing?.sceneId ?? ""}" placeholder="Leave empty for all scenes">
+          <label>Scene</label>
+          <select name="sceneId">
+            <option value="">All scenes</option>
+            ${game.scenes.map(s => `<option value="${s.id}"${s.id === existing?.sceneId ? " selected" : ""}>${s.name}</option>`).join("")}
+          </select>
         </div>
 
         <h3 style="border-bottom:1px solid var(--color-border-light);padding-bottom:4px;">Token Prototype</h3>
@@ -919,7 +1082,10 @@ const api = {
         </div>
         <div class="form-group">
           <label>Texture Path</label>
-          <input type="text" name="proto_texture" value="${existing?.tokenPrototype?.texture?.src ?? "icons/svg/lightning.svg"}">
+          <div style="display:flex;gap:4px;">
+            <input type="text" name="proto_texture" value="${existing?.tokenPrototype?.texture?.src ?? "icons/svg/lightning.svg"}" style="flex:1;">
+            <button type="button" data-action="pick-texture" style="flex:0 0 auto;"><i class="fas fa-file-image"></i></button>
+          </div>
         </div>
         <div class="form-group" style="display:flex;gap:8px;">
           <div style="flex:1;">
@@ -939,7 +1105,7 @@ const api = {
             <input type="number" name="sched_intervalDays" value="${existing?.schedule?.intervalDays ?? 1}" min="1">
           </div>
           <div style="flex:1;">
-            <label>Start Day Offset</label>
+            <label>Start Day Offset <span style="font-weight:normal;font-size:0.85em;opacity:0.7;" title="Which day in the interval cycle has departures. 0 = day 0, 1 = day 1, etc.">(?)</span></label>
             <input type="number" name="sched_startDayOffset" value="${existing?.schedule?.startDayOffset ?? 0}" min="0">
           </div>
         </div>
@@ -961,10 +1127,22 @@ const api = {
     const result = await foundry.applications.api.DialogV2.wait({
       window: { title: isEdit ? `Rail Network — Edit Route: ${routeId}` : "Rail Network — New Route" },
       content,
-      position: { width: 560 },
+      position: { width: 560, top: 50 },
       render: (event, dialog) => {
         const form = dialog.element.querySelector("form");
         if (!form) return;
+
+        // Scroll to top on open
+        const scrollEl = dialog.element.querySelector(".window-content");
+        if (scrollEl) scrollEl.scrollTop = 0;
+
+        // Foundry v14: FilePicker for texture path
+        form.querySelector("[data-action='pick-texture']")?.addEventListener("click", async (e) => {
+          e.preventDefault();
+          const input = form.querySelector('input[name="proto_texture"]');
+          const fp = new FilePicker({ type: "image", current: input.value, callback: (path) => { input.value = path; } });
+          fp.render(true);
+        });
 
         // Add departure hour row
         form.querySelector("[data-action='add-departure']")?.addEventListener("click", (e) => {
@@ -975,7 +1153,7 @@ const api = {
           row.className = "dep-row";
           row.style.cssText = "display:flex;gap:4px;margin-bottom:4px;";
           row.innerHTML = `
-            <input type="number" name="depHour_${idx}" step="0.5" min="0" max="24" style="width:80px;" placeholder="Hour">
+            <input type="number" name="depHour_${idx}" step="0.5" min="0" max="24" style="width:80px;" placeholder="Hour (0-24)">
             <input type="number" name="routeNum_${idx}" style="width:70px;" placeholder="Route #">
             <button type="button" class="remove-row" style="flex:0 0 auto;">✕</button>`;
           container.appendChild(row);
@@ -1229,51 +1407,58 @@ Hooks.on("deleteDrawing", (drawing, options, userId) => {
 });
 
 // Scene control buttons (GM only)
+// Foundry v14: controls is a plain object keyed by name (not an array),
+// and tools is also a plain object keyed by name (not an array).
 Hooks.on("getSceneControlButtons", (controls) => {
   if (!game.user.isGM) return;
-  controls.push({
+  controls[MODULE_ID] = {
     name: MODULE_ID,
+    order: 10,
     title: "Rail Network",
     icon: "fa-solid fa-train",
-    layer: "tokens",
-    tools: [
-      {
+    tools: {
+      refresh: {
         name: "refresh",
+        order: 1,
         title: "Refresh Trains",
         icon: "fa-solid fa-train",
         onClick: () => api.refresh(),
         button: true,
       },
-      {
+      routes: {
         name: "routes",
+        order: 2,
         title: "Manage Routes",
         icon: "fa-solid fa-map-signs",
         onClick: () => api.routeListDialog(),
         button: true,
       },
-      {
+      events: {
         name: "events",
+        order: 3,
         title: "Event Manager",
         icon: "fa-solid fa-calendar-exclamation",
         onClick: () => api.eventListDialog(),
         button: true,
       },
-      {
+      "tag-segment": {
         name: "tag-segment",
+        order: 4,
         title: "Tag Segment",
         icon: "fa-solid fa-route",
         onClick: () => api.setupDialog(),
         button: true,
       },
-      {
+      status: {
         name: "status",
+        order: 5,
         title: "Route Status",
         icon: "fa-solid fa-clipboard-list",
         onClick: () => api.status(),
         button: true,
       },
-    ],
-  });
+    },
+  };
 });
 
 // Calendaria integration
