@@ -1,0 +1,9 @@
+{
+  "name": "fvtt-rail-network",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test scripts/engine.test.mjs scripts/integration.test.mjs"
+  }
+}

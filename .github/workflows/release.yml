@@ -1,25 +1,24 @@
-name: Release Module
+name: Release
 
 on:
   release:
     types: [published]
 
-permissions:
-  contents: write
-
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
 
       - name: Extract version from tag
-        id: get-version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Update module.json with version and URLs
+      - name: Update module.json
         run: |
-          jq --arg v "${{ steps.get-version.outputs.version }}" \
+          jq --arg v "${{ steps.version.outputs.value }}" \
              --arg dl "https://github.com/${{ github.repository }}/releases/download/${{ github.event.release.tag_name }}/module.zip" \
              --arg manifest "https://github.com/${{ github.repository }}/releases/latest/download/module.json" \
              '. + {version: $v, download: $dl, manifest: $manifest}' \
@@ -28,11 +27,18 @@ jobs:
       - name: Create module.zip
         run: zip -r module.zip module.json scripts/
 
-      - name: Upload release assets
+      - name: Upload release artifacts
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
-            module.json \
             module.zip \
+            module.json \
             --clobber
+
+      # Uncomment after obtaining a package token from foundryvtt.com
+      # - name: Publish to Foundry VTT
+      #   uses: cs96and/FoundryVTT-release-package@v1
+      #   with:
+      #     package-token: ${{ secrets.PACKAGE_TOKEN }}
+      #     manifest-url: https://github.com/${{ github.repository }}/releases/download/${{ github.event.release.tag_name }}/module.json

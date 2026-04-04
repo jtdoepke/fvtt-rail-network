@@ -9,14 +9,14 @@ Foundry VTT v13+ module (`rail-network`) that animates train tokens along drawn 
 ## Commands
 
 ```bash
-# Run tests (Node.js test runner, no dependencies needed)
-node --test scripts/engine.test.mjs
+# Run all tests
+npm test
 
 # Run a single test by name
 node --test --test-name-pattern="chains two segments" scripts/engine.test.mjs
 ```
 
-No build step, no package manager, no linting configured. Tests use top-level `await import("./engine.mjs")` to load the module.
+No build step, no linting configured. Tests use Node.js built-in test runner via `node --test`.
 
 ## Architecture
 
@@ -71,6 +71,11 @@ Foundry Drawing `shape.points` is a flat array `[x0, y0, x1, y1, ...]` relative 
 
 When segments chain, the last station of segment A and first of segment B are duplicates at the same position. Segment A's last station provides the dwell time; segment B's first is dropped during `resolveRoutePath`.
 
+### Changelog
+
+Maintain `CHANGELOG.md` using [Keep a Changelog](https://keepachangelog.com/) format. When making user-facing changes, add an entry under `## [Unreleased]` in the appropriate category: Added, Changed, Deprecated, Removed, Fixed, Security. At release time, the `[Unreleased]` section becomes the new version heading.
+
 ### CI/CD
 
-Tag-triggered GitHub Actions workflow (`.github/workflows/release.yml`): on release publish, injects version + download/manifest URLs into `module.json` via `jq`, zips `module.json` + `scripts/`, and uploads both `module.json` and `module.zip` to the GitHub Release.
+- `.github/workflows/ci.yml` — runs tests on push/PR to `main`
+- `.github/workflows/release.yml` — on release publish, injects version + download/manifest URLs into `module.json` via `jq`, zips `module.json` + `scripts/`, and uploads both to the GitHub Release
