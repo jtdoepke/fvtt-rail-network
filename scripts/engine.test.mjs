@@ -668,6 +668,77 @@ describe("resolveRoutePath closest-point chaining", () => {
     assert.equal(result[3].station, "D");
   });
 
+  // Real-world config: sharn-fairhaven (Sharn→Wroat) and wroat-starilaskur (Wroat→Starilaskur).
+  // Junction at Wroat (off by 1px between segments).
+  // Two trips: Trip 1 lists [wroat-starilaskur, sharn-fairhaven] → should travel Starilaskur→Wroat→Sharn.
+  //            Trip 2 lists [sharn-fairhaven, wroat-starilaskur] → should travel Sharn→Wroat→Starilaskur.
+  const sharnFairhaven = {
+    segmentId: "sharn-fairhaven",
+    path: [
+      { station: "Sharn", x: 3960, y: 5906, hoursFromPrev: 0, dwellMinutes: 0 },
+      { x: 3985, y: 5902 },
+      { station: "First Tower", x: 4015, y: 5851, hoursFromPrev: 1, dwellMinutes: 30 },
+      { x: 4028, y: 5836 },
+      { station: "Faircourt", x: 4090, y: 5663, hoursFromPrev: 2, dwellMinutes: 60 },
+      { x: 4119, y: 5654 },
+      { station: "Wroat", x: 4379, y: 5386, hoursFromPrev: 4, dwellMinutes: 60 },
+    ],
+  };
+  const wroatStarilaskur = {
+    segmentId: "wroat-starilaskur",
+    path: [
+      { station: "Wroat", x: 4379, y: 5387, hoursFromPrev: 0, dwellMinutes: 60 },
+      { x: 4400, y: 5350 },
+      { station: "Mainford", x: 4489, y: 5221, hoursFromPrev: 1, dwellMinutes: 60 },
+      { x: 4600, y: 5200 },
+      { station: "Earlsfield", x: 4825, y: 5161, hoursFromPrev: 2, dwellMinutes: 60 },
+      { station: "Lowstead", x: 5028, y: 5101, hoursFromPrev: 1, dwellMinutes: 60 },
+      { station: "Nowhere", x: 5297, y: 4999, hoursFromPrev: 1.5, dwellMinutes: 60 },
+      { x: 5500, y: 4900 },
+      { station: "Starilaskur", x: 5630, y: 4871, hoursFromPrev: 2, dwellMinutes: 60 },
+    ],
+  };
+
+  it("real config trip 1: wroat-starilaskur then sharn-fairhaven → Starilaskur to Sharn", () => {
+    const result = resolveRoutePath([wroatStarilaskur, sharnFairhaven], 1000);
+    const stations = result.filter(n => "station" in n);
+    assert.deepEqual(
+      stations.map(s => s.station),
+      ["Starilaskur", "Nowhere", "Lowstead", "Earlsfield", "Mainford", "Wroat", "Faircourt", "First Tower", "Sharn"]
+    );
+    // First station (departure) should have dwellMinutes=0
+    assert.equal(stations[0].dwellMinutes, 0);
+    assert.equal(stations[0].hoursFromPrev, 0);
+    // Wroat junction should use max dwell: max(60, 60) = 60
+    const wroat = stations.find(s => s.station === "Wroat");
+    assert.equal(wroat.dwellMinutes, 60);
+    // First Tower dwell preserved
+    assert.equal(stations.find(s => s.station === "First Tower").dwellMinutes, 30);
+  });
+
+  it("real config trip 2: sharn-fairhaven then wroat-starilaskur → Sharn to Starilaskur", () => {
+    const result = resolveRoutePath([sharnFairhaven, wroatStarilaskur], 1000);
+    const stations = result.filter(n => "station" in n);
+    assert.deepEqual(
+      stations.map(s => s.station),
+      ["Sharn", "First Tower", "Faircourt", "Wroat", "Mainford", "Earlsfield", "Lowstead", "Nowhere", "Starilaskur"]
+    );
+    // First station (departure) should have dwellMinutes=0
+    assert.equal(stations[0].dwellMinutes, 0);
+    assert.equal(stations[0].hoursFromPrev, 0);
+    // Wroat junction should use max dwell
+    const wroat = stations.find(s => s.station === "Wroat");
+    assert.equal(wroat.dwellMinutes, 60);
+  });
+
+  it("real config: both segment orderings produce same path (just reversed)", () => {
+    const trip1 = resolveRoutePath([wroatStarilaskur, sharnFairhaven], 1000);
+    const trip2 = resolveRoutePath([sharnFairhaven, wroatStarilaskur], 1000);
+    const stations1 = trip1.filter(n => "station" in n).map(s => s.station);
+    const stations2 = trip2.filter(n => "station" in n).map(s => s.station);
+    assert.deepEqual(stations1, stations2.slice().reverse());
+  });
+
   it("waypoint-only junction", () => {
     const segments = [
       {

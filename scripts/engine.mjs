@@ -151,8 +151,20 @@ export function resolveRoutePath(segments, worldTime) {
   if (activePaths.length === 0) return [];
   if (activePaths.length === 1) return activePaths[0].map(n => ({ ...n }));
 
-  // Start with the first segment's full path
-  let result = activePaths[0].map(n => ({ ...n }));
+  // Orient the first segment by looking ahead to the second segment.
+  // If the junction is at the very start (index 0) of the first segment,
+  // reverse it so the junction moves to the end — otherwise the entire
+  // segment would be truncated. For junctions at the end or mid-path,
+  // keep the segment as-is (the loop handles truncation for T-junctions).
+  const firstPair = findClosestEndpointPair(activePaths[0], activePaths[1]);
+  let result;
+  if (firstPair.indexA === 0) {
+    result = orientAndSlicePath(
+      activePaths[0], activePaths[0].length - 1, 0
+    );
+  } else {
+    result = activePaths[0].map(n => ({ ...n }));
+  }
   let lastSegStartIdx = 0;
 
   for (let s = 1; s < activePaths.length; s++) {
@@ -193,6 +205,15 @@ export function resolveRoutePath(segments, worldTime) {
     lastSegStartIdx = result.length;
     for (let i = 1; i < orientedB.length; i++) {
       result.push(orientedB[i]);
+    }
+  }
+
+  // The first station is the departure point — zero its dwell so the
+  // train departs on schedule rather than waiting at the origin.
+  for (const node of result) {
+    if ("station" in node) {
+      node.dwellMinutes = 0;
+      break;
     }
   }
 

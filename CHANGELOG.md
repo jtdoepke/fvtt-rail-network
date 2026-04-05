@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-04-05
+
+### Fixed
+- First segment now correctly reversed when its junction with the next segment is at the start rather than the end
+- Departure station dwell time zeroed so trains depart on schedule instead of waiting at origin
+
 ## [0.0.6] - 2026-04-04
 
 ### Changed
@@ -92,7 +98,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional Sequencer and Calendaria module integration
 - GitHub Actions release workflow
 
-[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.6...HEAD
+[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.7...HEAD
+[0.0.7]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.3...v0.0.4
