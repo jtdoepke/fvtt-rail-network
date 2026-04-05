@@ -12,6 +12,8 @@ const {
   findExtraDepartures,
   reversePath,
   applyDirection,
+  findClosestEndpointPair,
+  orientAndSlicePath,
   parseCronField,
   parseCronExpression,
   describeCronExpression,
@@ -406,6 +408,289 @@ describe("resolveRoutePath", () => {
     assert.equal(result.length, 3);
     assert.equal(result[0].station, "A");
     assert.equal(result[1].x, 50); // waypoint preserved
+    assert.equal(result[2].station, "B");
+  });
+});
+
+// ============================================================================
+// findClosestEndpointPair
+// ============================================================================
+
+describe("findClosestEndpointPair", () => {
+  it("finds matching endpoints", () => {
+    const a = [{ x: 0, y: 0 }, { x: 100, y: 0 }];
+    const b = [{ x: 100, y: 0 }, { x: 200, y: 0 }];
+    const pair = findClosestEndpointPair(a, b);
+    assert.equal(pair.indexA, 1);
+    assert.equal(pair.indexB, 0);
+    assert.equal(pair.distance, 0);
+  });
+
+  it("finds closest when no exact match", () => {
+    const a = [{ x: 0, y: 0 }, { x: 100, y: 0 }];
+    const b = [{ x: 102, y: 1 }, { x: 200, y: 0 }];
+    const pair = findClosestEndpointPair(a, b);
+    assert.equal(pair.indexA, 1);
+    assert.equal(pair.indexB, 0);
+    assert.ok(pair.distance < 3);
+  });
+
+  it("finds T-junction (B endpoint matches A mid-point)", () => {
+    const a = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 200, y: 0 }];
+    const b = [{ x: 100, y: 0 }, { x: 100, y: 100 }];
+    const pair = findClosestEndpointPair(a, b);
+    assert.equal(pair.indexA, 1);
+    assert.equal(pair.indexB, 0);
+    assert.equal(pair.distance, 0);
+  });
+
+  it("parallel tracks don't false-match mid-segment", () => {
+    // Two tracks run parallel, close together at midpoints, converging at endpoints
+    const a = [{ x: 0, y: 0 }, { x: 50, y: 1 }, { x: 100, y: 0 }];
+    const b = [{ x: 100, y: 0 }, { x: 50, y: -1 }, { x: 200, y: 0 }];
+    // Mid-points (50,1) and (50,-1) are distance 2, but one must be an endpoint.
+    // Closest valid pair: A's last (100,0) and B's first (100,0), distance 0.
+    const pair = findClosestEndpointPair(a, b);
+    assert.equal(pair.indexA, 2);
+    assert.equal(pair.indexB, 0);
+    assert.equal(pair.distance, 0);
+  });
+});
+
+// ============================================================================
+// orientAndSlicePath
+// ============================================================================
+
+describe("orientAndSlicePath", () => {
+  it("forward slice preserves order", () => {
+    const path = [
+      { station: "A", x: 0, y: 0, hoursFromPrev: 0, dwellMinutes: 0 },
+      { station: "B", x: 100, y: 0, hoursFromPrev: 1, dwellMinutes: 5 },
+      { station: "C", x: 200, y: 0, hoursFromPrev: 2, dwellMinutes: 0 },
+    ];
+    const result = orientAndSlicePath(path, 0, 2);
+    assert.equal(result.length, 3);
+    assert.equal(result[0].station, "A");
+    assert.equal(result[0].hoursFromPrev, 0);
+    assert.equal(result[1].station, "B");
+    assert.equal(result[2].station, "C");
+  });
+
+  it("reverse slice reverses and shifts hoursFromPrev", () => {
+    const path = [
+      { station: "A", x: 0, y: 0, hoursFromPrev: 0, dwellMinutes: 0 },
+      { station: "B", x: 100, y: 0, hoursFromPrev: 2, dwellMinutes: 5 },
+      { station: "C", x: 200, y: 0, hoursFromPrev: 3, dwellMinutes: 0 },
+    ];
+    const result = orientAndSlicePath(path, 2, 0);
+    assert.equal(result.length, 3);
+    assert.equal(result[0].station, "C");
+    assert.equal(result[0].hoursFromPrev, 0);
+    assert.equal(result[1].station, "B");
+    assert.equal(result[1].hoursFromPrev, 3);
+    assert.equal(result[2].station, "A");
+    assert.equal(result[2].hoursFromPrev, 2);
+  });
+
+  it("partial forward slice (T-junction)", () => {
+    const path = [
+      { station: "A", x: 0, y: 0, hoursFromPrev: 0, dwellMinutes: 0 },
+      { station: "B", x: 100, y: 0, hoursFromPrev: 2, dwellMinutes: 5 },
+      { station: "C", x: 200, y: 0, hoursFromPrev: 3, dwellMinutes: 0 },
+    ];
+    const result = orientAndSlicePath(path, 1, 2);
+    assert.equal(result.length, 2);
+    assert.equal(result[0].station, "B");
+    assert.equal(result[0].hoursFromPrev, 0); // first station reset
+    assert.equal(result[1].station, "C");
+    assert.equal(result[1].hoursFromPrev, 3); // preserved
+  });
+
+  it("single point returns single node", () => {
+    const path = [
+      { station: "A", x: 0, y: 0, hoursFromPrev: 5, dwellMinutes: 10 },
+    ];
+    const result = orientAndSlicePath(path, 0, 0);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].station, "A");
+    assert.equal(result[0].hoursFromPrev, 0);
+  });
+});
+
+// ============================================================================
+// resolveRoutePath — closest-point chaining
+// ============================================================================
+
+describe("resolveRoutePath closest-point chaining", () => {
+  it("auto-orients reversed segment", () => {
+    const segments = [
+      {
+        segmentId: "a-b",
+        path: [
+          { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+          { station: "B", x: 100, y: 0, hoursFromPrev: 1, dwellMinutes: 5 },
+        ],
+      },
+      {
+        segmentId: "c-b", // B is at the end, reversed relative to expected travel
+        path: [
+          { station: "C", x: 200, y: 0, dwellMinutes: 0, hoursFromPrev: 0 },
+          { station: "B", x: 100, y: 0, hoursFromPrev: 2, dwellMinutes: 0 },
+        ],
+      },
+    ];
+
+    const result = resolveRoutePath(segments, 1000);
+    assert.equal(result.length, 3);
+    assert.equal(result[0].station, "A");
+    assert.equal(result[1].station, "B");
+    assert.equal(result[2].station, "C");
+    // B→C travel time: original C→B was 2h, reversed B→C should also be 2h
+    assert.equal(result[2].hoursFromPrev, 2);
+  });
+
+  it("chains segments regardless of B's internal direction", () => {
+    // Same physical track, B stored forward vs reversed — same result
+    const segA = {
+      segmentId: "a-b",
+      path: [
+        { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+        { station: "B", x: 100, y: 0, hoursFromPrev: 1, dwellMinutes: 5 },
+      ],
+    };
+    const segBForward = {
+      segmentId: "b-c",
+      path: [
+        { station: "B", x: 100, y: 0, dwellMinutes: 0 },
+        { station: "C", x: 200, y: 0, hoursFromPrev: 2, dwellMinutes: 0 },
+      ],
+    };
+    const segBReversed = {
+      segmentId: "c-b",
+      path: [
+        { station: "C", x: 200, y: 0, dwellMinutes: 0 },
+        { station: "B", x: 100, y: 0, hoursFromPrev: 2, dwellMinutes: 0 },
+      ],
+    };
+
+    const r1 = resolveRoutePath([segA, segBForward], 1000);
+    const r2 = resolveRoutePath([segA, segBReversed], 1000);
+
+    assert.equal(r1.length, 3);
+    assert.equal(r2.length, 3);
+    assert.equal(r1[0].station, "A");
+    assert.equal(r2[0].station, "A");
+    assert.equal(r1[2].station, "C");
+    assert.equal(r2[2].station, "C");
+  });
+
+  it("T-junction: B joins A mid-path, truncates A", () => {
+    const segments = [
+      {
+        segmentId: "a-c",
+        path: [
+          { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+          { station: "B", x: 100, y: 0, hoursFromPrev: 1, dwellMinutes: 5 },
+          { station: "C", x: 200, y: 0, hoursFromPrev: 1, dwellMinutes: 0 },
+        ],
+      },
+      {
+        segmentId: "b-d",
+        path: [
+          { station: "B", x: 100, y: 0, dwellMinutes: 0 },
+          { station: "D", x: 100, y: 100, hoursFromPrev: 2, dwellMinutes: 0 },
+        ],
+      },
+    ];
+
+    const result = resolveRoutePath(segments, 1000);
+    // A → B (truncated, C dropped) → D
+    assert.equal(result.length, 3);
+    assert.equal(result[0].station, "A");
+    assert.equal(result[1].station, "B");
+    assert.equal(result[2].station, "D");
+  });
+
+  it("junction dwell uses max of both sides", () => {
+    const segments = [
+      {
+        segmentId: "a-b",
+        path: [
+          { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+          { station: "B", x: 100, y: 0, hoursFromPrev: 1, dwellMinutes: 10 },
+        ],
+      },
+      {
+        segmentId: "b-c",
+        path: [
+          { station: "B", x: 100, y: 0, dwellMinutes: 60 },
+          { station: "C", x: 200, y: 0, hoursFromPrev: 2, dwellMinutes: 0 },
+        ],
+      },
+    ];
+
+    const result = resolveRoutePath(segments, 1000);
+    assert.equal(result.length, 3);
+    assert.equal(result[1].station, "B");
+    assert.equal(result[1].dwellMinutes, 60); // max(10, 60)
+  });
+
+  it("three segments with auto-orientation", () => {
+    const segments = [
+      {
+        segmentId: "a-b",
+        path: [
+          { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+          { station: "B", x: 100, y: 0, hoursFromPrev: 1, dwellMinutes: 5 },
+        ],
+      },
+      {
+        segmentId: "c-b", // stored reversed
+        path: [
+          { station: "C", x: 200, y: 0, dwellMinutes: 0 },
+          { station: "B", x: 100, y: 0, hoursFromPrev: 2, dwellMinutes: 0 },
+        ],
+      },
+      {
+        segmentId: "c-d",
+        path: [
+          { station: "C", x: 200, y: 0, dwellMinutes: 0 },
+          { station: "D", x: 300, y: 0, hoursFromPrev: 3, dwellMinutes: 0 },
+        ],
+      },
+    ];
+
+    const result = resolveRoutePath(segments, 1000);
+    assert.equal(result.length, 4);
+    assert.equal(result[0].station, "A");
+    assert.equal(result[1].station, "B");
+    assert.equal(result[2].station, "C");
+    assert.equal(result[3].station, "D");
+  });
+
+  it("waypoint-only junction", () => {
+    const segments = [
+      {
+        segmentId: "a-wp",
+        path: [
+          { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+          { x: 100, y: 0 }, // waypoint at junction
+        ],
+      },
+      {
+        segmentId: "wp-b",
+        path: [
+          { x: 100, y: 0 }, // waypoint at junction
+          { station: "B", x: 200, y: 0, hoursFromPrev: 2, dwellMinutes: 0 },
+        ],
+      },
+    ];
+
+    const result = resolveRoutePath(segments, 1000);
+    // A, waypoint, B — junction waypoint not duplicated
+    assert.equal(result.length, 3);
+    assert.equal(result[0].station, "A");
+    assert.ok(!("station" in result[1])); // waypoint
     assert.equal(result[2].station, "B");
   });
 });

@@ -44,50 +44,155 @@ export function drawingToPath(doc) {
 }
 
 /**
+ * Find the closest point pair between two path arrays, where at least one
+ * point in the pair must be an endpoint (first or last) of its segment.
+ * This prevents false matches on parallel tracks that run close together
+ * before converging at a station.
+ *
+ * @param {Array} pathA - First path array
+ * @param {Array} pathB - Second path array
+ * @returns {{ indexA: number, indexB: number, distance: number }}
+ */
+export function findClosestEndpointPair(pathA, pathB) {
+  let best = { indexA: 0, indexB: 0, distance: Infinity };
+
+  const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+  const check = (iA, iB) => {
+    const d = dist(pathA[iA], pathB[iB]);
+    if (d < best.distance) best = { indexA: iA, indexB: iB, distance: d };
+  };
+
+  const endpointsA = [0, pathA.length - 1];
+  const endpointsB = [0, pathB.length - 1];
+
+  // A's endpoints vs all of B
+  for (const iA of endpointsA) {
+    for (let iB = 0; iB < pathB.length; iB++) check(iA, iB);
+  }
+  // All of A vs B's endpoints (skip combos already checked above)
+  for (let iA = 1; iA < pathA.length - 1; iA++) {
+    for (const iB of endpointsB) check(iA, iB);
+  }
+
+  return best;
+}
+
+/**
+ * Extract and orient a sub-path traveling from entryIndex to exitIndex.
+ * If entryIndex > exitIndex, the sub-path is reversed with hoursFromPrev
+ * shifted correctly (same logic as reversePath).
+ *
+ * The first station in the result gets hoursFromPrev set to 0 since it
+ * is the new path start.
+ *
+ * @param {Array} path - Full segment path
+ * @param {number} entryIndex - Index where travel enters this segment
+ * @param {number} exitIndex - Index where travel exits this segment
+ * @returns {Array} Oriented sub-path
+ */
+export function orientAndSlicePath(path, entryIndex, exitIndex) {
+  if (entryIndex === exitIndex) {
+    const node = path[entryIndex];
+    if ("station" in node) return [{ ...node, hoursFromPrev: 0 }];
+    return [{ ...node }];
+  }
+
+  let subPath;
+  if (entryIndex < exitIndex) {
+    // Forward slice
+    subPath = path.slice(entryIndex, exitIndex + 1).map(n => ({ ...n }));
+  } else {
+    // Reverse slice: extract then reverse with hoursFromPrev shift
+    const slice = path.slice(exitIndex, entryIndex + 1);
+    subPath = reversePath(slice);
+  }
+
+  // Ensure first station has hoursFromPrev = 0
+  for (const node of subPath) {
+    if ("station" in node) {
+      node.hoursFromPrev = 0;
+      break;
+    }
+  }
+
+  return subPath;
+}
+
+/**
  * Resolves a route's path from chained segments with inline fallbacks.
  * Checks temporal availability (effectiveStart/End) and chains active segments.
+ *
+ * Segments are joined by finding the closest endpoint pair between consecutive
+ * segments (at least one of the two matched points must be an endpoint of its
+ * segment). This auto-detects travel direction through each segment and supports
+ * T-junctions where a segment connects mid-way along another.
+ *
+ * At junction points, if both segments have a station node, the station with
+ * the higher dwellMinutes is kept (max dwell rule).
  *
  * @param {Array} segments - Ordered segment configs with path arrays
  * @param {number} worldTime - Current world time for temporal filtering
  * @returns {Array} Unified path array of station and waypoint nodes
  */
 export function resolveRoutePath(segments, worldTime) {
-  const result = [];
-
+  // Collect temporally active segment paths
+  const activePaths = [];
   for (const seg of segments) {
-    // Check temporal availability
     const start = seg.effectiveStart ?? null;
     const end = seg.effectiveEnd ?? null;
-    if (start !== null && worldTime < start) break; // this and all subsequent segments inactive
-    if (end !== null && worldTime >= end) break;     // expired
+    if (start !== null && worldTime < start) break;
+    if (end !== null && worldTime >= end) break;
 
     const segPath = seg.path ?? [];
-    if (segPath.length === 0) continue;
+    if (segPath.length > 0) activePaths.push(segPath);
+  }
 
-    if (result.length > 0) {
-      // Chain: drop the first node of this segment (duplicate junction point)
-      // but preserve the dwell from the PREVIOUS segment's last station
-      const prevLast = result[result.length - 1];
-      const segFirst = segPath[0];
+  if (activePaths.length === 0) return [];
+  if (activePaths.length === 1) return activePaths[0].map(n => ({ ...n }));
 
-      // If both are stations at the same position, keep the previous one's dwell
-      // and skip the duplicate
-      if ("station" in segFirst && "station" in prevLast &&
-          segFirst.x === prevLast.x && segFirst.y === prevLast.y) {
-        // prevLast already has the dwell from the arriving segment — just skip segFirst
-        for (let i = 1; i < segPath.length; i++) {
-          result.push(segPath[i]);
-        }
-      } else {
-        // Not a matching junction — append all
-        for (const node of segPath) {
-          result.push(node);
-        }
-      }
-    } else {
-      for (const node of segPath) {
-        result.push(node);
-      }
+  // Start with the first segment's full path
+  let result = activePaths[0].map(n => ({ ...n }));
+  let lastSegStartIdx = 0;
+
+  for (let s = 1; s < activePaths.length; s++) {
+    const segB = activePaths[s];
+
+    // Find closest endpoint pair between the tail of accumulated path
+    // (the most recently appended segment) and all of segment B
+    const tail = result.slice(lastSegStartIdx);
+    const pair = findClosestEndpointPair(tail, segB);
+
+    // Map tail-relative index back to result-absolute index
+    const junctionInResult = lastSegStartIdx + pair.indexA;
+    const junctionInB = pair.indexB;
+
+    // Truncate accumulated path at junction (T-junction support)
+    if (junctionInResult < result.length - 1) {
+      result = result.slice(0, junctionInResult + 1);
+    }
+
+    // Orient B: entry is junctionInB, exit is whichever end is farther
+    const distToStart = junctionInB;
+    const distToEnd = segB.length - 1 - junctionInB;
+    const exitInB = distToEnd >= distToStart ? segB.length - 1 : 0;
+    const orientedB = orientAndSlicePath(segB, junctionInB, exitInB);
+
+    // Merge junction point: apply max dwell rule
+    const junctionNode = result[result.length - 1];
+    const bFirstNode = orientedB[0];
+    if ("station" in junctionNode && "station" in bFirstNode) {
+      const maxDwell = Math.max(
+        junctionNode.dwellMinutes ?? 0,
+        bFirstNode.dwellMinutes ?? 0
+      );
+      junctionNode.dwellMinutes = maxDwell;
+    }
+
+    // Append B (skip first node — it's the junction duplicate)
+    lastSegStartIdx = result.length;
+    for (let i = 1; i < orientedB.length; i++) {
+      result.push(orientedB[i]);
     }
   }
 
