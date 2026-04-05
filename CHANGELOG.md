@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-04-04
+
+### Added
+- Tag Segment tool is now a selectable canvas tool — click any drawing to open its Tag Segment dialog
+- Direction dropdown shows compass directions (N, S, E, W, NE, etc.) derived from path geometry
+- Compass labels update dynamically when segments are changed in the route edit dialog
+
+### Changed
+- Tag Segment table inputs have consistent dark background for visibility on alternating row colors
+
+### Fixed
+- Multiple trips with the same departure time now correctly produce separate tokens (removed incorrect deduplication)
+- Token reconciliation key includes route number to distinguish same-time departures on different trips
+
 ## [0.0.4] - 2026-04-04
 
 ### Changed
@@ -67,7 +81,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional Sequencer and Calendaria module integration
 - GitHub Actions release workflow
 
-[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.4...HEAD
+[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.5...HEAD
+[0.0.5]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.1...v0.0.2

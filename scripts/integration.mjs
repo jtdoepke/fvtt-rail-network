@@ -17,6 +17,7 @@ import {
   applyDirection,
   parseCronExpression,
   describeCronExpression,
+  getPathCompassLabels,
 } from "./engine.mjs";
 
 const MODULE_ID = "rail-network";
@@ -33,6 +34,7 @@ const _intendedPositions = new Map();
 
 let _updating = false;
 let _pendingWorldTime = null;
+let _tagSegmentHandler = null;
 
 function invalidateCache(segmentId) {
   if (segmentId) _pathCache.delete(segmentId);
@@ -115,7 +117,7 @@ async function updateAllTrains(worldTime) {
     );
     const existingByKey = new Map();
     for (const t of existingTokens) {
-      const key = `${t.flags[MODULE_ID].routeId}::${t.flags[MODULE_ID].departureTime}`;
+      const key = `${t.flags[MODULE_ID].routeId}::${t.flags[MODULE_ID].departureTime}::${t.flags[MODULE_ID].routeNum ?? ""}`;
       existingByKey.set(key, t);
     }
 
@@ -239,6 +241,7 @@ async function updateAllTrains(worldTime) {
         allDesired.push({
           routeId: normalized.id,
           departureTime: dep.departureTime,
+          routeNum,
           name: `Route ${routeNum} -- ${proto.name}`,
           x: pos.x,
           y: pos.y,
@@ -253,7 +256,7 @@ async function updateAllTrains(worldTime) {
     // Mark desired keys
     const desiredByKey = new Map();
     for (const d of allDesired) {
-      desiredByKey.set(`${d.routeId}::${d.departureTime}`, d);
+      desiredByKey.set(`${d.routeId}::${d.departureTime}::${d.routeNum ?? ""}`, d);
     }
 
     // Reconcile: create, move, delete
@@ -282,6 +285,7 @@ async function updateAllTrains(worldTime) {
               managed: true,
               routeId: desired.routeId,
               departureTime: desired.departureTime,
+              routeNum: desired.routeNum,
             },
           },
         });
@@ -1038,6 +1042,7 @@ const api = {
         .rail-segment-table thead { position: sticky; top: 0; background: var(--color-cool-5); z-index: 1; }
         .rail-segment-table tbody tr:hover { background: rgba(255, 200, 0, 0.15); cursor: pointer; }
         .rail-segment-table input[type="text"]:not(:placeholder-shown) { font-weight: bold; }
+        .rail-segment-table input { background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.2); }
       </style>
       <form>
         <div class="form-group">
@@ -1142,14 +1147,26 @@ const api = {
     const normalized = existing ? normalizeSchedule(existing) : null;
     const trips = normalized?.schedule ?? [];
 
+    // Resolve compass labels from a trip's segments
+    function getCompassOpts(segments) {
+      if (!segments?.length) return null;
+      try {
+        const path = resolveRouteWithDrawings({ segments }, game.time.worldTime);
+        return getPathCompassLabels(path);
+      } catch { return null; }
+    }
+
+    const defaultLabels = { outbound: "Outbound", return: "Return", roundtrip: "Round trip" };
+
     // Build trip block HTML for each existing trip
     function buildTripBlock(tripIdx, trip) {
       const routeNum = trip.routeNumbers?.[0] ?? "";
       const parts = (trip.cron ?? "0 6").split(/\s+/);
       const minute = parts[0] ?? "0";
       const hour = parts[1] ?? "6";
+      const compass = getCompassOpts(trip.segments) ?? defaultLabels;
       const dirOpts = ["outbound", "return", "roundtrip"].map(d => {
-        const label = d === "outbound" ? "→ Outbound" : d === "return" ? "← Return" : "↔ Round trip";
+        const label = compass[d] ?? defaultLabels[d];
         const sel = (trip.direction ?? "outbound") === d ? " selected" : "";
         return `<option value="${d}"${sel}>${label}</option>`;
       }).join("");
@@ -1329,10 +1346,30 @@ const api = {
           if (descEl) descEl.textContent = `→ ${desc}`;
         };
 
-        // Live update descriptions on input change
+        // Update direction dropdown labels based on resolved segment path
+        const updateDirLabels = (tripBlock) => {
+          const idx = tripBlock.dataset.trip;
+          const segSelects = tripBlock.querySelectorAll(`[name^="trip_${idx}_seg_"]`);
+          const segments = [...segSelects].map(sel => ({ segmentId: sel.value })).filter(s => s.segmentId);
+          const compass = getCompassOpts(segments) ?? defaultLabels;
+          const dirSelect = tripBlock.querySelector(`[name="trip_${idx}_dir"]`);
+          if (dirSelect) {
+            for (const opt of dirSelect.options) {
+              opt.textContent = compass[opt.value] ?? defaultLabels[opt.value];
+            }
+          }
+        };
+
+        // Live update descriptions and direction labels on input/change
         form.addEventListener("input", (e) => {
           const tripBlock = e.target.closest(".trip-block");
           if (tripBlock) updateDesc(tripBlock);
+        });
+        form.addEventListener("change", (e) => {
+          const tripBlock = e.target.closest(".trip-block");
+          if (tripBlock && e.target.tagName === "SELECT" && e.target.name?.includes("_seg_")) {
+            updateDirLabels(tripBlock);
+          }
         });
 
         // Add trip
@@ -1472,8 +1509,16 @@ const api = {
       const tripCount = normalized.schedule.length;
       const schedSummary = normalized.schedule.map(t => {
         const desc = describeCronExpression(t.cron, false);
-        const dir = t.direction === "return" ? "←" : t.direction === "roundtrip" ? "↔" : "→";
-        return `${dir} ${desc}`;
+        let dirLabel;
+        try {
+          const path = resolveRouteWithDrawings({ segments: t.segments }, game.time.worldTime);
+          const compass = getPathCompassLabels(path);
+          dirLabel = compass?.[t.direction ?? "outbound"];
+        } catch { /* ignore */ }
+        if (!dirLabel) {
+          dirLabel = t.direction === "return" ? "Return" : t.direction === "roundtrip" ? "Round trip" : "Outbound";
+        }
+        return `${dirLabel} ${desc}`;
       }).join("; ");
       rows += `
         <tr>
@@ -1601,6 +1646,29 @@ Hooks.on("canvasReady", () => {
   invalidateCache();
   _intendedPositions.clear();
   updateAllTrains(game.time.worldTime);
+
+  // Tag Segment tool: click a drawing on canvas to open the Tag Segment dialog.
+  // Remove prior listener to avoid duplicates on scene change.
+  if (_tagSegmentHandler) canvas.stage.off("pointerdown", _tagSegmentHandler);
+  _tagSegmentHandler = (event) => {
+    if (!game.user.isGM) return;
+    const activeControl = ui.controls?.activeControl;
+    const activeTool = ui.controls?.activeTool;
+    if (activeControl !== MODULE_ID || activeTool !== "tag-segment") return;
+
+    const pos = event.getLocalPosition(canvas.stage);
+    const drawing = canvas.drawings?.placeables?.find(d => {
+      const bounds = d.bounds;
+      return bounds && pos.x >= bounds.x && pos.x <= bounds.x + bounds.width
+                    && pos.y >= bounds.y && pos.y <= bounds.y + bounds.height;
+    });
+
+    if (drawing) {
+      event.stopPropagation();
+      api.setupDialog(drawing.document);
+    }
+  };
+  canvas.stage.on("pointerdown", _tagSegmentHandler);
 });
 
 // Drawing mutation hooks — invalidate cache and reposition tokens
@@ -1666,10 +1734,9 @@ Hooks.on("getSceneControlButtons", (controls) => {
       "tag-segment": {
         name: "tag-segment",
         order: 4,
-        title: "Tag Segment",
+        title: "Tag Segment (click a drawing)",
         icon: "fa-solid fa-route",
-        onClick: () => api.setupDialog(),
-        button: true,
+        // Not a button — stays selected so user can click drawings on the canvas
       },
       status: {
         name: "status",

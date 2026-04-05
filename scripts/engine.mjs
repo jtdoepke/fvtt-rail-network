@@ -331,11 +331,11 @@ export function getTrainPosition(legs, totalJourneySeconds, elapsedSeconds) {
  */
 export function findAllActiveDepartures(worldTime, schedulePatterns, maxJourneySeconds, calendarDecomposer) {
   const results = [];
-  const seen = new Set();
   const lookbackSeconds = maxJourneySeconds;
   const startTime = worldTime - lookbackSeconds;
 
-  for (const pattern of schedulePatterns) {
+  for (let pi = 0; pi < schedulePatterns.length; pi++) {
+    const pattern = schedulePatterns[pi];
     const hasCalendaria = !!calendarDecomposer;
     const parsed = parseCronExpression(pattern.cron, hasCalendaria);
     const offset = parsed.offset || 0;
@@ -374,10 +374,6 @@ export function findAllActiveDepartures(worldTime, schedulePatterns, maxJourneyS
           if (!parsed.month.match(cal.month)) continue;
           if (!parsed.dayOfWeek.match(cal.dayOfWeek)) continue;
         }
-
-        // Deduplicate by departureTime (first pattern wins)
-        if (seen.has(departureTime)) continue;
-        seen.add(departureTime);
 
         const elapsed = worldTime - departureTime;
 
@@ -588,6 +584,50 @@ export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
 // ============================================================================
 // PATH DIRECTION — reverse and round-trip path transforms
 // ============================================================================
+
+/**
+ * Compute compass direction labels for a path based on start/end station positions.
+ * Returns an object with labels for outbound, return, and roundtrip directions.
+ *
+ * @param {Array} path - Resolved path array with station nodes
+ * @returns {{ outbound: string, return: string, roundtrip: string } | null}
+ */
+export function getPathCompassLabels(path) {
+  if (!path || path.length < 2) return null;
+
+  const stations = path.filter(n => "station" in n);
+  if (stations.length < 2) return null;
+
+  const first = stations[0];
+  const last = stations[stations.length - 1];
+  const dx = last.x - first.x;
+  const dy = last.y - first.y;
+
+  // Foundry canvas: y increases downward, so positive dy = south
+  const angle = Math.atan2(-dy, dx) * (180 / Math.PI); // -dy to flip to compass (N = up)
+
+  const compassDir = (deg) => {
+    // Normalize to 0-360
+    const a = ((deg % 360) + 360) % 360;
+    if (a >= 337.5 || a < 22.5) return "E";
+    if (a >= 22.5 && a < 67.5) return "NE";
+    if (a >= 67.5 && a < 112.5) return "N";
+    if (a >= 112.5 && a < 157.5) return "NW";
+    if (a >= 157.5 && a < 202.5) return "W";
+    if (a >= 202.5 && a < 247.5) return "SW";
+    if (a >= 247.5 && a < 292.5) return "S";
+    return "SE";
+  };
+
+  const fwd = compassDir(angle);
+  const rev = compassDir(angle + 180);
+
+  return {
+    outbound: fwd,
+    return: rev,
+    roundtrip: `${fwd}/${rev}`,
+  };
+}
 
 /**
  * Reverses a resolved path array, shifting hoursFromPrev values so that
