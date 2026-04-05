@@ -777,6 +777,8 @@ const api = {
       id: "rail-network-event-edit",
       window: { title: isEdit ? `Rail Network — Edit Event: ${eventId}` : "Rail Network — Create Event" },
       content,
+      // Foundry v14: explicit left required for horizontal dragging
+      position: { width: 500, left: 200, top: 100 },
       render: (event, dialog) => {
         // Foundry v14: window-content has overflow:hidden by default; enable scrolling
         const scrollEl = dialog.element.querySelector(".window-content");
@@ -914,7 +916,8 @@ const api = {
       id: "rail-network-event-list",
       window: { title: "Rail Network — Event Manager" },
       content,
-      position: { width: 700 },
+      // Foundry v14: explicit left required for horizontal dragging (null left → NaN on drag)
+      position: { width: 700, left: 100, top: 50 },
       render: (event, dialog) => {
         const el = dialog.element;
         if (!el) return;
@@ -1015,8 +1018,6 @@ const api = {
     for (let i = 0; i < numPoints; i++) {
       const { x: absX, y: absY } = absPoints[i];
       const existing = stationMap.get(i);
-      const checked = existing ? "checked" : "";
-      const disabled = existing ? "" : "disabled";
       const name = existing?.name ?? "";
       const hours = existing?.hoursFromPrev ?? "";
       const dwell = existing?.dwellMinutes ?? "";
@@ -1025,10 +1026,9 @@ const api = {
         <tr data-point-index="${i}" data-point-x="${absX}" data-point-y="${absY}">
           <td>${i}</td>
           <td>(${absX}, ${absY})</td>
-          <td><input type="checkbox" name="isStation_${i}" ${checked}></td>
-          <td><input type="text" name="name_${i}" value="${name}" size="12" placeholder="Station name" ${disabled}></td>
-          <td><input type="number" name="hours_${i}" value="${hours}" step="0.1" size="6" placeholder="Travel hrs" ${disabled}></td>
-          <td><input type="number" name="dwell_${i}" value="${dwell}" step="1" size="4" placeholder="Minutes" ${disabled}></td>
+          <td><input type="text" name="name_${i}" value="${name}" size="12" placeholder="Station name"></td>
+          <td><input type="number" name="hours_${i}" value="${hours}" step="0.1" size="6" placeholder="Travel hrs"></td>
+          <td><input type="number" name="dwell_${i}" value="${dwell}" step="1" size="4" placeholder="Minutes"></td>
         </tr>
       `;
     }
@@ -1037,7 +1037,7 @@ const api = {
       <style>
         .rail-segment-table thead { position: sticky; top: 0; background: var(--color-cool-5); z-index: 1; }
         .rail-segment-table tbody tr:hover { background: rgba(255, 200, 0, 0.15); cursor: pointer; }
-        .rail-segment-table input:disabled { opacity: 0.3; }
+        .rail-segment-table input[type="text"]:not(:placeholder-shown) { font-weight: bold; }
       </style>
       <form>
         <div class="form-group">
@@ -1047,7 +1047,7 @@ const api = {
         </div>
         <table class="rail-segment-table">
           <thead>
-            <tr><th>#</th><th>Position</th><th>Station?</th><th>Name</th><th>Hours from Prev</th><th>Dwell (min)</th></tr>
+            <tr><th>#</th><th>Position</th><th>Name</th><th>Hours from Prev</th><th>Dwell (min)</th></tr>
           </thead>
           <tbody>${pointRows}</tbody>
         </table>
@@ -1058,26 +1058,17 @@ const api = {
       id: "rail-network-tag-segment",
       window: { title: "Rail Network — Tag Segment" },
       content,
-      // Foundry v14: position.top ensures dialog opens with content visible from the top
-      position: { top: 50 },
-      render: (event, html) => {
+      position: { width: 700, height: 600, top: 50, left: 100 },
+      render: (event, dialog) => {
         // Foundry v14: window-content has overflow:hidden by default; enable scrolling
-        const scrollEl = html.querySelector?.(".window-content") ?? html.closest?.(".application")?.querySelector(".window-content");
+        const el = dialog.element ?? dialog;
+        const scrollEl = el.querySelector?.(".window-content") ?? el.closest?.(".application")?.querySelector(".window-content");
         if (scrollEl) {
           scrollEl.style.overflowY = "auto";
           scrollEl.scrollTop = 0;
         }
 
-        const root = html.querySelector?.("form") ?? html;
-
-        // Toggle station fields when checkbox changes
-        root.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-          cb.addEventListener("change", (e) => {
-            const row = e.target.closest("tr");
-            const inputs = row.querySelectorAll('input:not([type="checkbox"])');
-            inputs.forEach(inp => inp.disabled = !e.target.checked);
-          });
-        });
+        const root = el.querySelector?.("form") ?? el;
 
         // Highlight point on map when hovering a row
         let highlightGraphic = null;
@@ -1123,10 +1114,11 @@ const api = {
     const segmentId = result.segmentId;
     const stations = [];
     for (let i = 0; i < numPoints; i++) {
-      if (result[`isStation_${i}`]) {
+      const name = result[`name_${i}`]?.trim();
+      if (name) {
         const station = {
           pointIndex: i,
-          name: result[`name_${i}`] || `Point ${i}`,
+          name,
           dwellMinutes: Number(result[`dwell_${i}`]) || 0,
         };
         if (result[`hours_${i}`]) {
@@ -1220,8 +1212,8 @@ const api = {
     }
 
     const cronHelp = hasCalendaria
-      ? `Fields: minute, hour, day-of-month, month, day-of-week. Standard cron against the active calendar.`
-      : `Fields: minute, hour, offset. Hour is absolute — "6" = daily at 6am, "6/48" = every 2 days. Offset shifts the epoch in hours.`;
+      ? `Fields: minute, hour, day-of-month, month, day-of-week — matched against the active Calendaria calendar.`
+      : `Fields: minute, hour, offset — hour counts from the start of the world clock.`;
 
     const content = `
       <form>
@@ -1256,11 +1248,35 @@ const api = {
           Trips
           <button type="button" data-action="add-trip" style="float:right;">+ Add Trip</button>
         </h3>
-        <p style="margin:4px 0 8px;font-size:0.85em;opacity:0.7;">
-          Each trip defines a departure schedule, direction, and path.
-          Cron fields support *, commas (1,3,5), ranges (1-5), and steps (*/2, 6/48).<br>
-          ${cronHelp}
-        </p>
+        <div style="margin:4px 0 8px;font-size:0.85em;opacity:0.7;">
+          <p style="margin:0 0 6px;">Each trip defines when a train departs, which direction it travels, and which track segments it follows. ${cronHelp}</p>
+          <details style="margin-bottom:4px;">
+            <summary style="cursor:pointer;font-weight:bold;">Schedule field syntax</summary>
+            <table style="margin:4px 0;border-collapse:collapse;font-size:0.95em;">
+              <tr><td style="padding:2px 8px 2px 0;"><code>5</code></td><td>Exact value (minute 5, or hour 5 repeating daily)</td></tr>
+              <tr><td style="padding:2px 8px 2px 0;"><code>*</code></td><td>Every value (every minute, every hour)</td></tr>
+              <tr><td style="padding:2px 8px 2px 0;"><code>1,3,5</code></td><td>List — matches 1, 3, or 5</td></tr>
+              <tr><td style="padding:2px 8px 2px 0;"><code>1-5</code></td><td>Range — matches 1 through 5</td></tr>
+              <tr><td style="padding:2px 8px 2px 0;"><code>*/15</code></td><td>Every 15th value (e.g. minutes 0, 15, 30, 45)</td></tr>
+              <tr><td style="padding:2px 8px 2px 0;"><code>6/48</code></td><td>Starting at 6, every 48 (e.g. hour 6, 54, 102…)</td></tr>
+            </table>
+          </details>
+          <details>
+            <summary style="cursor:pointer;font-weight:bold;">Examples</summary>
+            <table style="margin:4px 0;border-collapse:collapse;font-size:0.95em;">
+              <tr><td style="padding:2px 8px 2px 0;">Min <code>0</code>, Hour <code>6</code></td><td>Daily at 06:00</td></tr>
+              <tr><td style="padding:2px 8px 2px 0;">Min <code>30</code>, Hour <code>6</code></td><td>Daily at 06:30</td></tr>
+              <tr><td style="padding:2px 8px 2px 0;">Min <code>0</code>, Hour <code>6,18</code></td><td>Twice daily at 06:00 and 18:00</td></tr>
+              <tr><td style="padding:2px 8px 2px 0;">Min <code>0</code>, Hour <code>*/12</code></td><td>Every 12 hours</td></tr>
+              <tr><td style="padding:2px 8px 2px 0;">Min <code>0</code>, Hour <code>6/48</code></td><td>At 06:00 every 2 days</td></tr>
+              <tr><td style="padding:2px 8px 2px 0;">Min <code>0</code>, Hour <code>6/48</code>, Offset <code>24</code></td><td>At 06:00 every 2 days, shifted by 1 day</td></tr>
+              ${hasCalendaria ? `
+              <tr><td style="padding:2px 8px 2px 0;">Hour <code>6</code>, Weekday <code>1,3,5</code></td><td>At 06:00 on weekdays 1, 3, and 5</td></tr>
+              <tr><td style="padding:2px 8px 2px 0;">Hour <code>6</code>, Day <code>1</code></td><td>At 06:00 on the 1st of every month</td></tr>
+              ` : ""}
+            </table>
+          </details>
+        </div>
         <div class="trips-container">${tripBlocks}</div>
       </form>
     `;
@@ -1272,7 +1288,8 @@ const api = {
       id: "rail-network-route-edit",
       window: { title: isEdit ? `Rail Network — Edit Route: ${routeId}` : "Rail Network — New Route" },
       content,
-      position: { width: 620, top: 50 },
+      // Foundry v14: explicit left required for horizontal dragging
+      position: { width: 620, top: 50, left: 200 },
       render: (event, dialog) => {
         const form = dialog.element.querySelector("form");
         if (!form) return;
@@ -1494,7 +1511,8 @@ const api = {
       id: "rail-network-route-list",
       window: { title: "Rail Network — Manage Routes" },
       content,
-      position: { width: 600 },
+      // Foundry v14: explicit left required for horizontal dragging
+      position: { width: 600, left: 200, top: 100 },
       render: (event, dialog) => {
         const el = dialog.element;
         if (!el) return;

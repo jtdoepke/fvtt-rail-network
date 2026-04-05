@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-04-04
+
+### Changed
+- Tag Segment dialog: removed Station? checkbox — a point is a station if Name is filled in
+- Tag Segment dialog: station names displayed in bold when non-empty
+- Route edit dialog: expanded cron help text with collapsible syntax guide and examples
+
+### Fixed
+- All dialogs now horizontally draggable on Foundry v14 (explicit `left` position prevents NaN drag)
+- Tag Segment dialog: scrollbar and constrained height so content doesn't fill the screen
+- Tag Segment dialog: point hover highlight on canvas now works correctly on v14
+- All dialogs: consistent render callback parameter handling for v14 compatibility
+
 ## [0.0.3] - 2026-04-04
 
 ### Added
@@ -54,7 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional Sequencer and Calendaria module integration
 - GitHub Actions release workflow
 
-[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.3...HEAD
+[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.4...HEAD
+[0.0.4]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/jtdoepke/fvtt-rail-network/releases/tag/v0.0.1
