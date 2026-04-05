@@ -13,6 +13,10 @@ import {
   drawingToPath,
   applyEvents,
   computeDesiredTokens,
+  normalizeSchedule,
+  applyDirection,
+  parseCronExpression,
+  describeCronExpression,
 } from "./engine.mjs";
 
 const MODULE_ID = "rail-network";
@@ -105,11 +109,6 @@ async function updateAllTrains(worldTime) {
     worldTime = worldTime ?? game.time.worldTime;
     const routes = game.settings.get(MODULE_ID, "routes");
     const allEvents = game.settings.get(MODULE_ID, "events");
-    const sceneId = canvas.scene.id;
-
-    // Filter routes to those on this scene (or with no sceneId restriction)
-    const sceneRoutes = routes.filter(r => !r.sceneId || r.sceneId === sceneId);
-
     // Get existing managed tokens
     const existingTokens = canvas.scene.tokens.filter(
       t => t.flags?.[MODULE_ID]?.managed
@@ -120,66 +119,125 @@ async function updateAllTrains(worldTime) {
       existingByKey.set(key, t);
     }
 
+    // Build Calendaria decomposer if available
+    let calendarDecomposer = null;
+    const calApi = game.modules.get("calendaria")?.api;
+    if (calApi) {
+      try {
+        const cal = calApi.getActiveCalendar();
+        if (cal) {
+          calendarDecomposer = (wt) => {
+            const c = cal.timeToComponents(wt);
+            return {
+              minute: c.minute,
+              hour: c.hour,
+              dayOfMonth: (c.dayOfMonth ?? 0) + 1,
+              month: (c.month ?? 0) + 1,
+              dayOfWeek: calApi.dayOfWeek(c, cal),
+            };
+          };
+        }
+      } catch { /* Calendaria not ready */ }
+    }
+
+    // Path resolver using Drawing cache
+    const pathResolver = (segments, wt) => {
+      const enriched = segments.map(seg => {
+        if (_pathCache.has(seg.segmentId)) {
+          return { ...seg, path: _pathCache.get(seg.segmentId) };
+        }
+        const drawing = canvas.drawings?.placeables?.find(
+          d => d.document.flags?.[MODULE_ID]?.segmentId === seg.segmentId
+        );
+        if (drawing) {
+          const path = drawingToPath(drawing.document);
+          _pathCache.set(seg.segmentId, path);
+          return { ...seg, path };
+        }
+        return seg;
+      });
+      return resolveRoutePath(enriched, wt);
+    };
+
     // Compute desired state for all routes
     const allDesired = [];
-    for (const route of sceneRoutes) {
-      // Use Drawing-enriched path resolution
-      const path = resolveRouteWithDrawings(route, worldTime);
-      if (path.length < 2) continue;
-
-      const { legs, totalJourneySeconds } = buildRouteSegments(path);
-      if (legs.length === 0) continue;
-
-      const activeEvents = getActiveEvents(allEvents, route.id, worldTime);
+    for (const route of routes) {
+      const normalized = normalizeSchedule(route);
+      const activeEvents = getActiveEvents(allEvents, normalized.id, worldTime);
 
       // closeLine → skip entirely
       if (activeEvents.some(e => e.type === "closeLine")) {
-        fireHook("routeClosed", route.id, activeEvents.find(e => e.type === "closeLine"));
+        fireHook("routeClosed", normalized.id, activeEvents.find(e => e.type === "closeLine"));
         continue;
       }
 
-      const scheduled = findAllActiveDepartures(worldTime, route.schedule, totalJourneySeconds);
-      const extras = findExtraDepartures(activeEvents, worldTime, legs);
+      // Resolve paths per trip, find max journey time
+      const tripCache = new Map();
+      const resolveTrip = (segments, direction) => {
+        const key = JSON.stringify(segments) + "|" + (direction ?? "outbound");
+        if (tripCache.has(key)) return tripCache.get(key);
+        const path = pathResolver(segments, worldTime);
+        if (!path || path.length < 2) { tripCache.set(key, null); return null; }
+        const directedPath = applyDirection(path, direction);
+        const result = buildRouteSegments(directedPath);
+        if (result.legs.length === 0) { tripCache.set(key, null); return null; }
+        tripCache.set(key, result);
+        return result;
+      };
+
+      let maxJourneySeconds = 24 * 3600;
+      for (const trip of normalized.schedule) {
+        const resolved = resolveTrip(trip.segments, trip.direction);
+        if (resolved) maxJourneySeconds = Math.max(maxJourneySeconds, resolved.totalJourneySeconds);
+      }
+
+      const scheduled = findAllActiveDepartures(worldTime, normalized.schedule, maxJourneySeconds, calendarDecomposer);
+
+      // Extra departures use first trip's path
+      const firstTrip = normalized.schedule[0];
+      const defaultResolved = firstTrip ? resolveTrip(firstTrip.segments, firstTrip.direction) : null;
+      const extras = defaultResolved
+        ? findExtraDepartures(activeEvents, worldTime, defaultResolved.legs).map(dep => ({
+            ...dep,
+            routeNum: "X",
+            direction: firstTrip.direction,
+            segments: firstTrip.segments,
+          }))
+        : [];
+
       const allDepartures = [...scheduled, ...extras];
-      const proto = route.tokenPrototype;
-      const hours = route.schedule.departureHours;
+      const proto = normalized.tokenPrototype;
 
       for (const dep of allDepartures) {
+        const resolved = resolveTrip(dep.segments, dep.direction);
+        if (!resolved) continue;
+
+        const { legs, totalJourneySeconds } = resolved;
         const { skip, adjustedElapsed } = applyEvents(activeEvents, dep.departureTime, dep.elapsed, legs, worldTime);
 
         if (skip) {
-          fireHook("trainDestroyed", route.id, dep.departureTime,
+          fireHook("trainDestroyed", normalized.id, dep.departureTime,
             activeEvents.find(e => e.type === "destroy" && e.target.departureTime === dep.departureTime));
           continue;
         }
 
-        // Fire delay hook if delayed
         const delayEvt = activeEvents.find(e => e.type === "delay" && e.target.departureTime === dep.departureTime);
         if (delayEvt) {
-          fireHook("trainDelayed", route.id, dep.departureTime, computeEffectiveDelay(delayEvt, worldTime), delayEvt);
+          fireHook("trainDelayed", normalized.id, dep.departureTime, computeEffectiveDelay(delayEvt, worldTime), delayEvt);
         }
 
-        // Fire blockTrack hook
         const blockEvt = activeEvents.find(e => e.type === "blockTrack");
         if (blockEvt) {
-          fireHook("trackBlocked", route.id, blockEvt.target.stationName, blockEvt);
+          fireHook("trackBlocked", normalized.id, blockEvt.target.stationName, blockEvt);
         }
 
         const pos = getTrainPosition(legs, totalJourneySeconds, adjustedElapsed);
-        if (!pos) continue; // journey complete
+        if (!pos) continue;
 
-        // Determine route number
-        let routeNum;
-        if (dep.startStationName) {
-          routeNum = "X";
-        } else {
-          const depHour = ((dep.departureTime % 86400) / 3600);
-          const hourIdx = hours.indexOf(depHour);
-          routeNum = (route.routeNumbers && hourIdx >= 0) ? route.routeNumbers[hourIdx] : "?";
-        }
+        const routeNum = dep.startStationName ? "X" : (dep.routeNum ?? "?");
 
         allDesired.push({
-          routeId: route.id,
+          routeId: normalized.id,
           departureTime: dep.departureTime,
           name: `Route ${routeNum} -- ${proto.name}`,
           x: pos.x,
@@ -347,31 +405,47 @@ function buildSegmentOptions(selectedId) {
   }).join("");
 }
 
-/** Get station names for a given route by resolving its segment paths. */
+/** Get station names for a given route by resolving its first trip's segment paths. */
 function getRouteStationNames(route) {
-  const path = resolveRouteWithDrawings(route, game.time.worldTime);
+  const normalized = normalizeSchedule(route);
+  const firstTrip = normalized.schedule[0];
+  if (!firstTrip?.segments) return [];
+  const path = resolveRouteWithDrawings({ segments: firstTrip.segments }, game.time.worldTime);
   return path.filter(n => n.station).map(n => n.station);
 }
 
-/** Build departure time options for a route's schedule, formatted readably. */
+/** Build departure time options from a route's cron-based schedule, formatted readably. */
 function buildDepartureOptions(route, selectedTime) {
-  const { departureHours, intervalDays, startDayOffset } = route.schedule;
+  const normalized = normalizeSchedule(route);
   const worldTime = game.time.worldTime;
   const currentDay = Math.floor(worldTime / 86400);
+  const seen = new Set();
   const options = [];
-  // Show departures for a window of days around now
-  for (let dayOff = -intervalDays; dayOff <= intervalDays * 2; dayOff++) {
-    const day = currentDay + dayOff;
-    const cycleDelta = day - (startDayOffset ?? 0);
-    const mod = ((cycleDelta % intervalDays) + intervalDays) % intervalDays;
-    if (mod !== 0) continue;
-    for (const hour of departureHours) {
-      const depTime = day * 86400 + hour * 3600;
-      const sel = depTime === selectedTime ? " selected" : "";
-      options.push(`<option value="${depTime}"${sel}>${formatWorldTime(depTime)}</option>`);
+
+  // For each trip, enumerate departures in a 3-day window around now
+  for (const trip of normalized.schedule) {
+    const parsed = parseCronExpression(trip.cron, false);
+    const offset = parsed.offset || 0;
+    const startHour = (currentDay - 1) * 24;
+    const endHour = (currentDay + 2) * 24;
+
+    for (let absHour = startHour; absHour < endHour; absHour++) {
+      const adjustedHour = absHour - offset;
+      if (!parsed.hour.match(adjustedHour)) continue;
+
+      for (let minute = 0; minute < 60; minute++) {
+        if (!parsed.minute.match(minute)) continue;
+        const depTime = absHour * 3600 + minute * 60;
+        if (seen.has(depTime)) continue;
+        seen.add(depTime);
+        const sel = depTime === selectedTime ? " selected" : "";
+        options.push({ depTime, html: `<option value="${depTime}"${sel}>${formatWorldTime(depTime)}</option>` });
+      }
     }
   }
-  return options.join("");
+
+  options.sort((a, b) => a.depTime - b.depTime);
+  return options.map(o => o.html).join("");
 }
 
 // ---------------------------------------------------------------------------
@@ -398,19 +472,41 @@ const api = {
     lines.push(`<b>Managed Tokens:</b> ${managed.length}`);
 
     for (const route of routes) {
-      const path = resolveRouteWithDrawings(route, worldTime);
-      if (path.length < 2) {
-        lines.push(`<br><b>${route.id}:</b> No active path`);
+      const normalized = normalizeSchedule(route);
+      const active = getActiveEvents(events, normalized.id, worldTime);
+
+      // Show info for each trip
+      let tripCount = 0;
+      for (const trip of normalized.schedule) {
+        const path = resolveRouteWithDrawings({ segments: trip.segments }, worldTime);
+        if (path.length < 2) continue;
+        const directedPath = applyDirection(path, trip.direction);
+        const { legs, totalJourneySeconds } = buildRouteSegments(directedPath);
+        const stationNames = legs.map(l => l.startStation.station);
+        stationNames.push(legs[legs.length - 1].endStation.station);
+        const desc = describeCronExpression(trip.cron, false);
+        const routeNums = trip.routeNumbers?.join(", ") || "?";
+        if (tripCount === 0) lines.push(`<br><b>${normalized.id}:</b>`);
+        lines.push(`&nbsp;&nbsp;#${routeNums} ${desc} (${(trip.direction ?? "outbound")}): ${stationNames.join(" → ")} [${(totalJourneySeconds / 3600).toFixed(1)}h]`);
+        tripCount++;
+      }
+
+      if (tripCount === 0) {
+        lines.push(`<br><b>${normalized.id}:</b> No active path`);
         continue;
       }
-      const { legs, totalJourneySeconds } = buildRouteSegments(path);
-      const active = getActiveEvents(events, route.id, worldTime);
-      const deps = findAllActiveDepartures(worldTime, route.schedule, totalJourneySeconds);
-      const stationNames = legs.map(l => l.startStation.station);
-      stationNames.push(legs[legs.length - 1].endStation.station);
 
-      lines.push(`<br><b>${route.id}:</b> ${stationNames.join(" → ")}`);
-      lines.push(`&nbsp;&nbsp;Journey: ${(totalJourneySeconds / 3600).toFixed(1)}h | Active departures: ${deps.length} | Events: ${active.length}`);
+      // Count total active departures across all trips
+      let maxJourney = 24 * 3600;
+      for (const trip of normalized.schedule) {
+        const path = resolveRouteWithDrawings({ segments: trip.segments }, worldTime);
+        if (path.length >= 2) {
+          const { totalJourneySeconds } = buildRouteSegments(applyDirection(path, trip.direction));
+          maxJourney = Math.max(maxJourney, totalJourneySeconds);
+        }
+      }
+      const deps = findAllActiveDepartures(worldTime, normalized.schedule, maxJourney);
+      lines.push(`&nbsp;&nbsp;Active departures: ${deps.length} | Events: ${active.length}`);
     }
 
     ChatMessage.create({ content: lines.join("<br>"), whisper: [game.user.id] });
@@ -427,26 +523,34 @@ const api = {
     const route = routes.find(r => r.id === routeId);
     if (!route) return null;
 
+    const normalized = normalizeSchedule(route);
     const worldTime = game.time.worldTime;
-    const currentDay = Math.floor(worldTime / 86400);
-    const { intervalDays, startDayOffset, departureHours } = route.schedule;
-    const sortedHours = [...departureHours].sort((a, b) => a - b);
+    let best = null;
 
-    // Look forward up to intervalDays * 2 to find next run day
-    for (let dayOffset = 0; dayOffset <= intervalDays * 2; dayOffset++) {
-      const checkDay = currentDay + dayOffset;
-      const cycleDelta = checkDay - (startDayOffset ?? 0);
-      const mod = ((cycleDelta % intervalDays) + intervalDays) % intervalDays;
-      if (mod !== 0) continue;
+    // Search forward through hours for each trip pattern
+    for (const trip of normalized.schedule) {
+      const parsed = parseCronExpression(trip.cron, false);
+      const offset = parsed.offset || 0;
+      const currentHour = Math.floor(worldTime / 3600);
 
-      for (const hour of sortedHours) {
-        const depTime = checkDay * 86400 + hour * 3600;
-        if (depTime > worldTime) {
-          return { routeId, departureTime: depTime, inSeconds: depTime - worldTime };
+      // Check up to 7 days forward
+      for (let absHour = currentHour; absHour < currentHour + 168; absHour++) {
+        const adjustedHour = absHour - offset;
+        if (!parsed.hour.match(adjustedHour)) continue;
+
+        for (let minute = 0; minute < 60; minute++) {
+          if (!parsed.minute.match(minute)) continue;
+          const depTime = absHour * 3600 + minute * 60;
+          if (depTime <= worldTime) continue;
+          if (!best || depTime < best.departureTime) {
+            best = { routeId, departureTime: depTime, inSeconds: depTime - worldTime };
+          }
+          break; // found earliest minute for this hour+pattern
         }
+        if (best) break; // found one for this pattern
       }
     }
-    return null;
+    return best;
   },
 
   /** Add an event, returns the event's auto-generated ID. */
@@ -670,9 +774,17 @@ const api = {
     };
 
     const result = await foundry.applications.api.DialogV2.wait({
+      id: "rail-network-event-edit",
       window: { title: isEdit ? `Rail Network — Edit Event: ${eventId}` : "Rail Network — Create Event" },
       content,
       render: (event, dialog) => {
+        // Foundry v14: window-content has overflow:hidden by default; enable scrolling
+        const scrollEl = dialog.element.querySelector(".window-content");
+        if (scrollEl) {
+          scrollEl.style.overflowY = "auto";
+          scrollEl.scrollTop = 0;
+        }
+
         const form = dialog.element.querySelector("form");
         if (!form) return;
 
@@ -711,7 +823,7 @@ const api = {
         {
           action: "save",
           label: isEdit ? "Save" : "Create Event",
-          callback: (event, button) => new FormDataExtended(button.form).object,
+          callback: (event, button) => new (foundry.applications.ux?.FormDataExtended ?? FormDataExtended)(button.form).object,
         },
         { action: "cancel", label: "Cancel" },
       ],
@@ -799,6 +911,7 @@ const api = {
     `;
 
     const result = await foundry.applications.api.DialogV2.wait({
+      id: "rail-network-event-list",
       window: { title: "Rail Network — Event Manager" },
       content,
       position: { width: 700 },
@@ -942,14 +1055,18 @@ const api = {
     `;
 
     const result = await foundry.applications.api.DialogV2.wait({
+      id: "rail-network-tag-segment",
       window: { title: "Rail Network — Tag Segment" },
       content,
       // Foundry v14: position.top ensures dialog opens with content visible from the top
       position: { top: 50 },
       render: (event, html) => {
-        // Scroll to top on open
+        // Foundry v14: window-content has overflow:hidden by default; enable scrolling
         const scrollEl = html.querySelector?.(".window-content") ?? html.closest?.(".application")?.querySelector(".window-content");
-        if (scrollEl) scrollEl.scrollTop = 0;
+        if (scrollEl) {
+          scrollEl.style.overflowY = "auto";
+          scrollEl.scrollTop = 0;
+        }
 
         const root = html.querySelector?.("form") ?? html;
 
@@ -993,7 +1110,7 @@ const api = {
           action: "save",
           label: "Save",
           callback: (event, button) => {
-            const fd = new FormDataExtended(button.form);
+            const fd = new (foundry.applications.ux?.FormDataExtended ?? FormDataExtended)(button.form);
             return fd.object;
           },
         },
@@ -1027,39 +1144,84 @@ const api = {
     const routes = game.settings.get(MODULE_ID, "routes");
     const existing = routeId ? routes.find(r => r.id === routeId) : null;
     const isEdit = !!existing;
+    const hasCalendaria = !!game.modules.get("calendaria")?.active;
 
     const segOptions = buildSegmentOptions();
+    const normalized = existing ? normalizeSchedule(existing) : null;
+    const trips = normalized?.schedule ?? [];
 
-    // Build initial departure hour rows
-    const depHours = existing?.schedule?.departureHours ?? [];
-    const routeNums = existing?.routeNumbers ?? [];
-    let depRows = "";
-    for (let i = 0; i < depHours.length; i++) {
-      depRows += `
-        <div class="dep-row" style="display:flex;gap:4px;margin-bottom:4px;">
-          <input type="number" name="depHour_${i}" value="${depHours[i]}" step="0.5" min="0" max="24" style="width:80px;" placeholder="Hour (0-24)">
-          <input type="number" name="routeNum_${i}" value="${routeNums[i] ?? ""}" style="width:70px;" placeholder="Route #">
-          <button type="button" class="remove-row" style="flex:0 0 auto;">✕</button>
+    // Build trip block HTML for each existing trip
+    function buildTripBlock(tripIdx, trip) {
+      const routeNum = trip.routeNumbers?.[0] ?? "";
+      const parts = (trip.cron ?? "0 6").split(/\s+/);
+      const minute = parts[0] ?? "0";
+      const hour = parts[1] ?? "6";
+      const dirOpts = ["outbound", "return", "roundtrip"].map(d => {
+        const label = d === "outbound" ? "→ Outbound" : d === "return" ? "← Return" : "↔ Round trip";
+        const sel = (trip.direction ?? "outbound") === d ? " selected" : "";
+        return `<option value="${d}"${sel}>${label}</option>`;
+      }).join("");
+
+      // Calendaria fields or offset
+      let extraFields = "";
+      if (hasCalendaria) {
+        const day = parts[2] ?? "*";
+        const month = parts[3] ?? "*";
+        const weekday = parts[4] ?? "*";
+        extraFields = `
+          <div style="flex:1;"><label>Day</label><input type="text" name="trip_${tripIdx}_day" value="${day}" placeholder="*"></div>
+          <div style="flex:1;"><label>Month</label><input type="text" name="trip_${tripIdx}_month" value="${month}" placeholder="*"></div>
+          <div style="flex:1;"><label>Weekday</label><input type="text" name="trip_${tripIdx}_weekday" value="${weekday}" placeholder="*"></div>`;
+      } else {
+        const offset = parts[2] ?? "0";
+        extraFields = `
+          <div style="flex:1;"><label>Offset</label><input type="text" name="trip_${tripIdx}_offset" value="${offset}" placeholder="0"></div>`;
+      }
+
+      // Build segment chain
+      const segs = trip.segments ?? [];
+      let segChain = "";
+      for (let s = 0; s < segs.length; s++) {
+        const seg = segs[s];
+        const opts = segOptions.includes(`value="${seg.segmentId}"`)
+          ? segOptions.replace(`value="${seg.segmentId}"`, `value="${seg.segmentId}" selected`)
+          : `<option value="${seg.segmentId}" selected>${seg.segmentId}</option>` + segOptions;
+        if (s > 0) segChain += `<span style="margin:0 4px;opacity:0.5;">→</span>`;
+        segChain += `<select name="trip_${tripIdx}_seg_${s}" style="width:140px;">${opts}</select>`;
+      }
+
+      const desc = describeCronExpression(trip.cron ?? "0 6", hasCalendaria);
+
+      return `
+        <div class="trip-block" data-trip="${tripIdx}" style="border:1px solid var(--color-border-light);border-radius:4px;padding:8px;margin-bottom:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <b>Trip ${tripIdx + 1}</b>
+            <button type="button" class="remove-trip" data-trip="${tripIdx}" style="font-size:0.85em;">Remove</button>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
+            <div style="flex:1;"><label>Route #</label><input type="text" name="trip_${tripIdx}_routeNum" value="${routeNum}" placeholder="101"></div>
+            <div style="flex:1;"><label>Direction</label><select name="trip_${tripIdx}_dir">${dirOpts}</select></div>
+            <div style="flex:1;"><label>Minute</label><input type="text" name="trip_${tripIdx}_min" value="${minute}" placeholder="0"></div>
+            <div style="flex:1;"><label>Hour</label><input type="text" name="trip_${tripIdx}_hour" value="${hour}" placeholder="6"></div>
+            ${extraFields}
+          </div>
+          <div style="margin-bottom:4px;">
+            <label style="font-size:0.85em;">Segments:</label>
+            <span class="seg-chain" style="display:inline-flex;align-items:center;flex-wrap:wrap;gap:2px;">${segChain}</span>
+            <button type="button" class="add-trip-seg" data-trip="${tripIdx}" style="font-size:0.85em;margin-left:4px;">+ Segment</button>
+          </div>
+          <div class="trip-desc" style="font-size:0.85em;opacity:0.7;font-style:italic;">→ ${desc}</div>
         </div>`;
     }
 
-    // Build initial segment rows
-    const segs = existing?.segments ?? [];
-    let segRows = "";
-    for (let i = 0; i < segs.length; i++) {
-      const s = segs[i];
-      // Include existing segmentId as option even if not on current scene
-      const opts = segOptions.includes(`value="${s.segmentId}"`)
-        ? segOptions.replace(`value="${s.segmentId}"`, `value="${s.segmentId}" selected`)
-        : `<option value="${s.segmentId}" selected>${s.segmentId}</option>` + segOptions;
-      segRows += `
-        <div class="seg-row" style="display:flex;gap:4px;margin-bottom:4px;flex-wrap:wrap;">
-          <select name="seg_${i}_id" style="width:160px;">${opts}</select>
-          <input type="number" name="seg_${i}_start" value="${s.effectiveStart ?? ""}" style="width:120px;" placeholder="Effective start">
-          <input type="number" name="seg_${i}_end" value="${s.effectiveEnd ?? ""}" style="width:120px;" placeholder="Effective end">
-          <button type="button" class="remove-row" style="flex:0 0 auto;">✕</button>
-        </div>`;
+    let tripBlocks = "";
+    for (let t = 0; t < trips.length; t++) {
+      tripBlocks += buildTripBlock(t, trips[t]);
     }
+
+    const cronHelp = hasCalendaria
+      ? `Fields: minute, hour, day-of-month, month, day-of-week. Standard cron against the active calendar.`
+      : `Fields: minute, hour, offset. Hour is absolute — "6" = daily at 6am, "6/48" = every 2 days. Offset shifts the epoch in hours.`;
 
     const content = `
       <form>
@@ -1067,14 +1229,6 @@ const api = {
           <label>Route ID</label>
           <input type="text" name="id" value="${existing?.id ?? ""}" ${isEdit ? "readonly" : ""} required>
         </div>
-        <div class="form-group">
-          <label>Scene</label>
-          <select name="sceneId">
-            <option value="">All scenes</option>
-            ${game.scenes.map(s => `<option value="${s.id}"${s.id === existing?.sceneId ? " selected" : ""}>${s.name}</option>`).join("")}
-          </select>
-        </div>
-
         <h3 style="border-bottom:1px solid var(--color-border-light);padding-bottom:4px;">Token Prototype</h3>
         <div class="form-group">
           <label>Service Name</label>
@@ -1098,45 +1252,39 @@ const api = {
           </div>
         </div>
 
-        <h3 style="border-bottom:1px solid var(--color-border-light);padding-bottom:4px;">Schedule</h3>
-        <div class="form-group" style="display:flex;gap:8px;">
-          <div style="flex:1;">
-            <label>Interval (days)</label>
-            <input type="number" name="sched_intervalDays" value="${existing?.schedule?.intervalDays ?? 1}" min="1">
-          </div>
-          <div style="flex:1;">
-            <label>Start Day Offset <span style="font-weight:normal;font-size:0.85em;opacity:0.7;" title="Which day in the interval cycle has departures. 0 = day 0, 1 = day 1, etc.">(?)</span></label>
-            <input type="number" name="sched_startDayOffset" value="${existing?.schedule?.startDayOffset ?? 0}" min="0">
-          </div>
-        </div>
-
         <h3 style="border-bottom:1px solid var(--color-border-light);padding-bottom:4px;">
-          Departure Hours
-          <button type="button" data-action="add-departure" style="float:right;">+ Add</button>
+          Trips
+          <button type="button" data-action="add-trip" style="float:right;">+ Add Trip</button>
         </h3>
-        <div class="departure-hours">${depRows}</div>
-
-        <h3 style="border-bottom:1px solid var(--color-border-light);padding-bottom:4px;">
-          Segments
-          <button type="button" data-action="add-segment" style="float:right;">+ Add</button>
-        </h3>
-        <div class="segments-list">${segRows}</div>
+        <p style="margin:4px 0 8px;font-size:0.85em;opacity:0.7;">
+          Each trip defines a departure schedule, direction, and path.
+          Cron fields support *, commas (1,3,5), ranges (1-5), and steps (*/2, 6/48).<br>
+          ${cronHelp}
+        </p>
+        <div class="trips-container">${tripBlocks}</div>
       </form>
     `;
 
+    // Track next trip index for dynamic additions
+    let nextTripIdx = trips.length;
+
     const result = await foundry.applications.api.DialogV2.wait({
+      id: "rail-network-route-edit",
       window: { title: isEdit ? `Rail Network — Edit Route: ${routeId}` : "Rail Network — New Route" },
       content,
-      position: { width: 560, top: 50 },
+      position: { width: 620, top: 50 },
       render: (event, dialog) => {
         const form = dialog.element.querySelector("form");
         if (!form) return;
 
-        // Scroll to top on open
+        // Foundry v14: window-content has overflow:hidden by default; enable scrolling
         const scrollEl = dialog.element.querySelector(".window-content");
-        if (scrollEl) scrollEl.scrollTop = 0;
+        if (scrollEl) {
+          scrollEl.style.overflowY = "auto";
+          scrollEl.scrollTop = 0;
+        }
 
-        // Foundry v14: FilePicker for texture path
+        // FilePicker for texture path
         form.querySelector("[data-action='pick-texture']")?.addEventListener("click", async (e) => {
           e.preventDefault();
           const input = form.querySelector('input[name="proto_texture"]');
@@ -1144,42 +1292,82 @@ const api = {
           fp.render(true);
         });
 
-        // Add departure hour row
-        form.querySelector("[data-action='add-departure']")?.addEventListener("click", (e) => {
-          e.preventDefault();
-          const container = form.querySelector(".departure-hours");
-          const idx = container.querySelectorAll(".dep-row").length;
-          const row = document.createElement("div");
-          row.className = "dep-row";
-          row.style.cssText = "display:flex;gap:4px;margin-bottom:4px;";
-          row.innerHTML = `
-            <input type="number" name="depHour_${idx}" step="0.5" min="0" max="24" style="width:80px;" placeholder="Hour (0-24)">
-            <input type="number" name="routeNum_${idx}" style="width:70px;" placeholder="Route #">
-            <button type="button" class="remove-row" style="flex:0 0 auto;">✕</button>`;
-          container.appendChild(row);
+        // Update cron description live when fields change
+        const updateDesc = (tripBlock) => {
+          const idx = tripBlock.dataset.trip;
+          const min = tripBlock.querySelector(`[name="trip_${idx}_min"]`)?.value ?? "0";
+          const hour = tripBlock.querySelector(`[name="trip_${idx}_hour"]`)?.value ?? "*";
+          let cron;
+          if (hasCalendaria) {
+            const day = tripBlock.querySelector(`[name="trip_${idx}_day"]`)?.value ?? "*";
+            const month = tripBlock.querySelector(`[name="trip_${idx}_month"]`)?.value ?? "*";
+            const weekday = tripBlock.querySelector(`[name="trip_${idx}_weekday"]`)?.value ?? "*";
+            cron = `${min} ${hour} ${day} ${month} ${weekday}`;
+          } else {
+            const offset = tripBlock.querySelector(`[name="trip_${idx}_offset"]`)?.value ?? "0";
+            cron = offset && offset !== "0" ? `${min} ${hour} ${offset}` : `${min} ${hour}`;
+          }
+          const desc = describeCronExpression(cron, hasCalendaria);
+          const descEl = tripBlock.querySelector(".trip-desc");
+          if (descEl) descEl.textContent = `→ ${desc}`;
+        };
+
+        // Live update descriptions on input change
+        form.addEventListener("input", (e) => {
+          const tripBlock = e.target.closest(".trip-block");
+          if (tripBlock) updateDesc(tripBlock);
         });
 
-        // Add segment row
-        form.querySelector("[data-action='add-segment']")?.addEventListener("click", (e) => {
+        // Add trip
+        form.querySelector("[data-action='add-trip']")?.addEventListener("click", (e) => {
           e.preventDefault();
-          const container = form.querySelector(".segments-list");
-          const idx = container.querySelectorAll(".seg-row").length;
-          const row = document.createElement("div");
-          row.className = "seg-row";
-          row.style.cssText = "display:flex;gap:4px;margin-bottom:4px;flex-wrap:wrap;";
-          row.innerHTML = `
-            <select name="seg_${idx}_id" style="width:160px;">${segOptions}</select>
-            <input type="number" name="seg_${idx}_start" style="width:120px;" placeholder="Effective start">
-            <input type="number" name="seg_${idx}_end" style="width:120px;" placeholder="Effective end">
-            <button type="button" class="remove-row" style="flex:0 0 auto;">✕</button>`;
-          container.appendChild(row);
+          const container = form.querySelector(".trips-container");
+          const idx = nextTripIdx++;
+          // Copy segments from the first trip if available
+          const firstBlock = container.querySelector(".trip-block");
+          const defaultSegs = [];
+          if (firstBlock) {
+            firstBlock.querySelectorAll("[name^='trip_'][name$='_seg_']").forEach(sel => {
+              // Can't easily copy, so just use first trip's segments
+            });
+          }
+          const defaultTrip = {
+            cron: "0 6",
+            routeNumbers: [],
+            direction: "outbound",
+            segments: trips[0]?.segments ?? [],
+          };
+          const tmp = document.createElement("div");
+          tmp.innerHTML = buildTripBlock(idx, defaultTrip);
+          container.appendChild(tmp.firstElementChild);
         });
 
-        // Remove row (delegated)
+        // Add segment to trip
         form.addEventListener("click", (e) => {
-          if (e.target.classList.contains("remove-row")) {
+          if (e.target.classList.contains("add-trip-seg")) {
             e.preventDefault();
-            e.target.closest(".dep-row, .seg-row").remove();
+            const tripIdx = e.target.dataset.trip;
+            const chain = e.target.closest(".trip-block").querySelector(".seg-chain");
+            const segIdx = chain.querySelectorAll("select").length;
+            if (segIdx > 0) {
+              const arrow = document.createElement("span");
+              arrow.style.cssText = "margin:0 4px;opacity:0.5;";
+              arrow.textContent = "→";
+              chain.appendChild(arrow);
+            }
+            const sel = document.createElement("select");
+            sel.name = `trip_${tripIdx}_seg_${segIdx}`;
+            sel.style.width = "140px";
+            sel.innerHTML = segOptions;
+            chain.appendChild(sel);
+          }
+        });
+
+        // Remove trip
+        form.addEventListener("click", (e) => {
+          if (e.target.classList.contains("remove-trip")) {
+            e.preventDefault();
+            e.target.closest(".trip-block").remove();
           }
         });
       },
@@ -1187,7 +1375,7 @@ const api = {
         {
           action: "save",
           label: "Save",
-          callback: (event, button) => new FormDataExtended(button.form).object,
+          callback: (event, button) => new (foundry.applications.ux?.FormDataExtended ?? FormDataExtended)(button.form).object,
         },
         { action: "cancel", label: "Cancel" },
       ],
@@ -1195,47 +1383,58 @@ const api = {
 
     if (result === "cancel" || !result) return;
 
-    // Reconstruct nested route object from flat form data
-    const departureHours = [];
-    const routeNumbers = [];
-    const segments = [];
-
-    for (const [key, val] of Object.entries(result)) {
-      if (key.startsWith("depHour_") && val != null && val !== "") {
-        const i = Number(key.split("_")[1]);
-        departureHours.push({ i, hour: Number(val), num: result[`routeNum_${i}`] });
-      }
-      const segMatch = key.match(/^seg_(\d+)_id$/);
-      if (segMatch && val) {
-        const i = Number(segMatch[1]);
-        const seg = { segmentId: val };
-        if (result[`seg_${i}_start`]) seg.effectiveStart = Number(result[`seg_${i}_start`]);
-        if (result[`seg_${i}_end`]) seg.effectiveEnd = Number(result[`seg_${i}_end`]);
-        segments.push({ i, ...seg });
-      }
+    // Reconstruct route from flat form data
+    const schedule = [];
+    // Collect all trip indices from form keys
+    const tripIndices = new Set();
+    for (const key of Object.keys(result)) {
+      const m = key.match(/^trip_(\d+)_/);
+      if (m) tripIndices.add(Number(m[1]));
     }
 
-    // Sort by original index to preserve order
-    departureHours.sort((a, b) => a.i - b.i);
-    segments.sort((a, b) => a.i - b.i);
+    for (const t of [...tripIndices].sort((a, b) => a - b)) {
+      const min = result[`trip_${t}_min`] ?? "0";
+      const hour = result[`trip_${t}_hour`] ?? "6";
+      let cron;
+      if (hasCalendaria) {
+        const day = result[`trip_${t}_day`] ?? "*";
+        const month = result[`trip_${t}_month`] ?? "*";
+        const weekday = result[`trip_${t}_weekday`] ?? "*";
+        cron = `${min} ${hour} ${day} ${month} ${weekday}`;
+      } else {
+        const offset = result[`trip_${t}_offset`] ?? "0";
+        cron = offset && offset !== "0" ? `${min} ${hour} ${offset}` : `${min} ${hour}`;
+      }
+
+      const routeNum = result[`trip_${t}_routeNum`];
+      const direction = result[`trip_${t}_dir`] ?? "outbound";
+
+      // Collect segments for this trip
+      const segments = [];
+      for (let s = 0; ; s++) {
+        const segId = result[`trip_${t}_seg_${s}`];
+        if (!segId) break;
+        segments.push({ segmentId: segId });
+      }
+
+      schedule.push({
+        cron,
+        routeNumbers: (routeNum != null && routeNum !== "") ? [routeNum] : [],
+        direction,
+        segments,
+      });
+    }
 
     const route = {
       id: result.id,
-      segments: segments.map(({ i, ...s }) => s),
       tokenPrototype: {
         name: result.proto_name,
         texture: { src: result.proto_texture || "icons/svg/lightning.svg" },
         width: Number(result.proto_width) || 0.8,
         height: Number(result.proto_height) || 0.8,
       },
-      routeNumbers: departureHours.map(d => (d.num != null && d.num !== "") ? Number(d.num) : undefined),
-      schedule: {
-        intervalDays: Number(result.sched_intervalDays) || 1,
-        startDayOffset: Number(result.sched_startDayOffset) || 0,
-        departureHours: departureHours.map(d => d.hour),
-      },
+      schedule,
     };
-    if (result.sceneId) route.sceneId = result.sceneId;
 
     if (isEdit) {
       await api.updateRoute(routeId, route);
@@ -1252,15 +1451,19 @@ const api = {
 
     let rows = "";
     for (const r of routes) {
-      const segCount = r.segments?.length ?? 0;
-      const hours = r.schedule?.departureHours?.map(h => `${h}:00`).join(", ") ?? "—";
-      const interval = r.schedule?.intervalDays === 1 ? "Daily" : `Every ${r.schedule?.intervalDays ?? "?"}d`;
+      const normalized = normalizeSchedule(r);
+      const tripCount = normalized.schedule.length;
+      const schedSummary = normalized.schedule.map(t => {
+        const desc = describeCronExpression(t.cron, false);
+        const dir = t.direction === "return" ? "←" : t.direction === "roundtrip" ? "↔" : "→";
+        return `${dir} ${desc}`;
+      }).join("; ");
       rows += `
         <tr>
           <td>${r.id}</td>
           <td>${r.tokenPrototype?.name ?? "—"}</td>
-          <td>${segCount}</td>
-          <td>${interval} @ ${hours}</td>
+          <td>${tripCount}</td>
+          <td>${schedSummary || "—"}</td>
           <td style="white-space:nowrap;">
             <button type="button" class="route-edit" data-id="${r.id}">Edit</button>
             <button type="button" class="route-delete" data-id="${r.id}">Delete</button>
@@ -1278,7 +1481,7 @@ const api = {
           <tr style="border-bottom:1px solid var(--color-border-light);">
             <th style="text-align:left;">Route ID</th>
             <th style="text-align:left;">Service</th>
-            <th>Segs</th>
+            <th>Trips</th>
             <th style="text-align:left;">Schedule</th>
             <th>Actions</th>
           </tr>
@@ -1288,6 +1491,7 @@ const api = {
     `;
 
     const result = await foundry.applications.api.DialogV2.wait({
+      id: "rail-network-route-list",
       window: { title: "Rail Network — Manage Routes" },
       content,
       position: { width: 600 },

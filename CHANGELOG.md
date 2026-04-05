@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-04-04
+
+### Added
+- Cron-based schedule system with support for `*`, commas, ranges, and step expressions
+- Travel direction per trip: outbound, return, and round trip
+- Per-trip segment paths: different departures on the same route can take different branches
+- Live human-readable schedule descriptions in route edit dialog
+- Optional Calendaria integration: day-of-month, month, and day-of-week cron fields when Calendaria is active
+- Offset field for non-Calendaria schedules (e.g., `0 6/48 24` = 6am every 2 days, offset 24h)
+
+### Changed
+- Route data model: `schedule` is now an array of trip objects (cron expression + direction + segments + route numbers)
+- Route edit dialog: Schedule/Departure Hours/Segments sections replaced with trip blocks
+- Route list: "Segs" column replaced with "Trips" showing cron schedule summaries
+- Backward compatible: existing routes with old format are auto-converted on read
+
+### Fixed
+- Duplicate dialogs when clicking toolbar buttons multiple times (added dialog IDs)
+- FormDataExtended deprecation warning on Foundry v14
+- Dialog overflow: scrollbar now appears when content exceeds dialog height
+- Removed unused Scene selector from route edit dialog
+
 ## [0.0.2] - 2026-04-04
 
 ### Fixed
@@ -32,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional Sequencer and Calendaria module integration
 - GitHub Actions release workflow
 
-[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.3...HEAD
+[0.0.3]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/jtdoepke/fvtt-rail-network/releases/tag/v0.0.1

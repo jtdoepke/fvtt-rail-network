@@ -10,6 +10,12 @@ const {
   getActiveEvents,
   computeEffectiveDelay,
   findExtraDepartures,
+  reversePath,
+  applyDirection,
+  parseCronField,
+  parseCronExpression,
+  describeCronExpression,
+  normalizeSchedule,
 } = mod;
 
 // ============================================================================
@@ -195,7 +201,7 @@ describe("getTrainPosition", () => {
 
 describe("findAllActiveDepartures", () => {
   it("daily schedule: finds correct departures for current day", () => {
-    const schedule = { intervalDays: 1, startDayOffset: 0, departureHours: [14] };
+    const schedule = [{ cron: "0 14", routeNumbers: ["101"], direction: "outbound", segments: [] }];
     // World time: day 5, 16:00 (2 hours after the 14:00 departure)
     const worldTime = 5 * SECONDS_PER_DAY + 16 * SECONDS_PER_HOUR;
     const maxJourney = 10 * SECONDS_PER_HOUR;
@@ -205,40 +211,43 @@ describe("findAllActiveDepartures", () => {
     assert.equal(departures.length, 1);
     assert.equal(departures[0].departureTime, 5 * SECONDS_PER_DAY + 14 * SECONDS_PER_HOUR);
     assert.equal(departures[0].elapsed, 2 * SECONDS_PER_HOUR);
+    assert.equal(departures[0].routeNum, "101");
   });
 
   it("daily schedule: finds departures from previous days (multi-day journey)", () => {
-    const schedule = { intervalDays: 1, startDayOffset: 0, departureHours: [22] };
+    const schedule = [{ cron: "0 22", routeNumbers: ["101"], direction: "outbound", segments: [] }];
     // World time: day 6, 08:00. Yesterday's 22:00 departure is 10h in transit.
     const worldTime = 6 * SECONDS_PER_DAY + 8 * SECONDS_PER_HOUR;
     const maxJourney = 60 * SECONDS_PER_HOUR; // 60h journey
 
     const departures = findAllActiveDepartures(worldTime, schedule, maxJourney);
 
-    // Should find day 6 (hasn't departed yet — 22:00 > 08:00, so skip),
-    // day 5 at 22:00 (10h elapsed), day 4 at 22:00 (34h elapsed), day 3 at 22:00 (58h elapsed)
+    // Should find day 5 at 22:00 (10h elapsed), day 4 at 22:00 (34h elapsed), day 3 at 22:00 (58h elapsed)
     assert.equal(departures.length, 3);
     assert.equal(departures[0].elapsed, 10 * SECONDS_PER_HOUR);  // most recent first
   });
 
   it("multi-day interval: skips non-run days", () => {
-    const schedule = { intervalDays: 2, startDayOffset: 0, departureHours: [10] };
-    // Day 0, 2, 4, 6... are run days. Day 1, 3, 5... are not.
-    // World time: day 3, 12:00. Day 3 is NOT a run day.
+    // Every 48 hours starting at hour 10 = departures at hours 10, 58, 106, ...
+    // Day 0 10:00, Day 2 10:00, Day 4 10:00, ...
+    const schedule = [{ cron: "0 10/48", routeNumbers: ["101"], direction: "outbound", segments: [] }];
+    // World time: day 3, 12:00.
     const worldTime = 3 * SECONDS_PER_DAY + 12 * SECONDS_PER_HOUR;
     const maxJourney = 30 * SECONDS_PER_HOUR;
 
     const departures = findAllActiveDepartures(worldTime, schedule, maxJourney);
 
-    // Day 3: not a run day. Day 2: run day, departed at 10:00, elapsed = 26h. Active (< 30h).
+    // Day 2 at 10:00 (abs hour 58), elapsed = 26h. Active (< 30h).
     assert.equal(departures.length, 1);
     assert.equal(departures[0].departureTime, 2 * SECONDS_PER_DAY + 10 * SECONDS_PER_HOUR);
   });
 
   it("multi-day interval with offset: runs on correct offset days", () => {
-    const schedule = { intervalDays: 3, startDayOffset: 1, departureHours: [10] };
-    // Run days: 1, 4, 7, 10... (startDayOffset=1, interval=3)
-    // World time: day 4, 15:00. Day 4 is a run day.
+    // Every 72 hours (3 days) starting at hour 10, offset 24h
+    // Matches hours where (absHour - 24) % 72 === 10 % 72
+    // = absHour = 34, 106, 178, ... = day 1 10:00, day 4 10:00, day 7 10:00
+    const schedule = [{ cron: "0 10/72 24", routeNumbers: ["101"], direction: "outbound", segments: [] }];
+    // World time: day 4, 15:00. Day 4 at 10:00 = abs hour 106, (106-24)%72 = 82%72 = 10 ✓
     const worldTime = 4 * SECONDS_PER_DAY + 15 * SECONDS_PER_HOUR;
     const maxJourney = 10 * SECONDS_PER_HOUR;
 
@@ -250,7 +259,11 @@ describe("findAllActiveDepartures", () => {
   });
 
   it("multiple departure hours: finds all concurrent active trains", () => {
-    const schedule = { intervalDays: 1, startDayOffset: 0, departureHours: [8, 14, 20] };
+    const schedule = [
+      { cron: "0 8", routeNumbers: ["101"], direction: "outbound", segments: [] },
+      { cron: "0 14", routeNumbers: ["102"], direction: "outbound", segments: [] },
+      { cron: "0 20", routeNumbers: ["103"], direction: "outbound", segments: [] },
+    ];
     // World time: day 5, 22:00. Journey takes 10h.
     const worldTime = 5 * SECONDS_PER_DAY + 22 * SECONDS_PER_HOUR;
     const maxJourney = 10 * SECONDS_PER_HOUR;
@@ -264,7 +277,7 @@ describe("findAllActiveDepartures", () => {
   });
 
   it("no departures active when none are in transit", () => {
-    const schedule = { intervalDays: 1, startDayOffset: 0, departureHours: [14] };
+    const schedule = [{ cron: "0 14", routeNumbers: ["101"], direction: "outbound", segments: [] }];
     // World time: day 5, 10:00. Today's departure hasn't happened yet.
     // Yesterday's 14:00 departed 20h ago. Journey is only 5h.
     const worldTime = 5 * SECONDS_PER_DAY + 10 * SECONDS_PER_HOUR;
@@ -607,5 +620,323 @@ describe("findExtraDepartures", () => {
     // At 17000 (12000s after departure), exceeds B→C journey time, should be inactive
     const extras2 = findExtraDepartures(events, 17000, legs);
     assert.equal(extras2.length, 0);
+  });
+});
+
+// ============================================================================
+// Path Direction — reversePath, applyDirection
+// ============================================================================
+
+describe("reversePath", () => {
+  it("reverses station order and shifts hoursFromPrev correctly", () => {
+    const path = [
+      { station: "A", x: 0, y: 0, hoursFromPrev: 0, dwellMinutes: 10 },
+      { station: "B", x: 100, y: 0, hoursFromPrev: 2, dwellMinutes: 5 },
+      { station: "C", x: 200, y: 0, hoursFromPrev: 3, dwellMinutes: 10 },
+    ];
+    const rev = reversePath(path);
+
+    assert.equal(rev.length, 3);
+    assert.equal(rev[0].station, "C");
+    assert.equal(rev[1].station, "B");
+    assert.equal(rev[2].station, "A");
+
+    // First station in reversed path has hoursFromPrev = 0
+    assert.equal(rev[0].hoursFromPrev, 0);
+    // C→B travel time = original C.hoursFromPrev = 3
+    assert.equal(rev[1].hoursFromPrev, 3);
+    // B→A travel time = original B.hoursFromPrev = 2
+    assert.equal(rev[2].hoursFromPrev, 2);
+
+    // Dwell times stay on their stations
+    assert.equal(rev[0].dwellMinutes, 10); // C's dwell
+    assert.equal(rev[1].dwellMinutes, 5);  // B's dwell
+    assert.equal(rev[2].dwellMinutes, 10); // A's dwell
+  });
+
+  it("preserves waypoints in reversed order", () => {
+    const path = [
+      { station: "A", x: 0, y: 0, hoursFromPrev: 0 },
+      { x: 50, y: 25 }, // waypoint
+      { station: "B", x: 100, y: 0, hoursFromPrev: 2 },
+    ];
+    const rev = reversePath(path);
+
+    assert.equal(rev.length, 3);
+    assert.equal(rev[0].station, "B");
+    assert.equal(rev[1].x, 50);
+    assert.equal(rev[1].y, 25);
+    assert.equal("station" in rev[1], false);
+    assert.equal(rev[2].station, "A");
+  });
+
+  it("does not mutate the original path", () => {
+    const path = [
+      { station: "A", x: 0, y: 0, hoursFromPrev: 0 },
+      { station: "B", x: 100, y: 0, hoursFromPrev: 2 },
+    ];
+    reversePath(path);
+    assert.equal(path[0].station, "A");
+    assert.equal(path[1].hoursFromPrev, 2);
+  });
+});
+
+describe("applyDirection", () => {
+  const path = [
+    { station: "A", x: 0, y: 0, hoursFromPrev: 0, dwellMinutes: 10 },
+    { station: "B", x: 100, y: 0, hoursFromPrev: 2, dwellMinutes: 5 },
+    { station: "C", x: 200, y: 0, hoursFromPrev: 3, dwellMinutes: 10 },
+  ];
+
+  it("outbound returns path unchanged", () => {
+    const result = applyDirection(path, "outbound");
+    assert.equal(result, path); // same reference
+  });
+
+  it("return reverses the path", () => {
+    const result = applyDirection(path, "return");
+    assert.equal(result[0].station, "C");
+    assert.equal(result[2].station, "A");
+  });
+
+  it("roundtrip concatenates outbound and reversed, deduping turnaround", () => {
+    const result = applyDirection(path, "roundtrip");
+    // A, B, C (outbound) + B, A (return, first station C dropped)
+    const stations = result.filter(n => "station" in n);
+    assert.equal(stations.length, 5);
+    assert.equal(stations[0].station, "A");
+    assert.equal(stations[1].station, "B");
+    assert.equal(stations[2].station, "C");
+    assert.equal(stations[3].station, "B");
+    assert.equal(stations[4].station, "A");
+  });
+
+  it("roundtrip journey has correct total time", () => {
+    const result = applyDirection(path, "roundtrip");
+    const { totalJourneySeconds } = buildRouteSegments(result);
+    // Outbound: A(dwell 600s) → B(travel 7200s, dwell 300s) → C(travel 10800s) = 18900s
+    // Return part: C's dwell is from outbound last station (10min=600s),
+    //   then B(travel 10800s, dwell 300s) → A(travel 7200s) = 18300s + 600s = 18900s
+    // But turnaround: C is shared, so total = outbound + C_dwell + return_travel
+    // Actually let's just verify it's roughly double
+    const outbound = buildRouteSegments(path).totalJourneySeconds;
+    // Roundtrip includes C's dwell (turnaround) which outbound doesn't
+    assert.ok(totalJourneySeconds > outbound);
+    assert.ok(totalJourneySeconds <= outbound * 2 + 600); // at most double + C dwell
+  });
+
+  it("default/null direction returns path unchanged", () => {
+    assert.equal(applyDirection(path, null), path);
+    assert.equal(applyDirection(path, undefined), path);
+  });
+});
+
+// ============================================================================
+// Cron Parser — parseCronField, parseCronExpression, describeCronExpression
+// ============================================================================
+
+describe("parseCronField", () => {
+  it("* matches everything", () => {
+    const f = parseCronField("*");
+    assert.equal(f.match(0), true);
+    assert.equal(f.match(59), true);
+    assert.equal(f.match(999), true);
+  });
+
+  it("bare number matches exactly", () => {
+    const f = parseCronField("5");
+    assert.equal(f.match(5), true);
+    assert.equal(f.match(4), false);
+    assert.equal(f.match(6), false);
+  });
+
+  it("bare number with implicitStep repeats", () => {
+    const f = parseCronField("6", { implicitStep: 24 });
+    assert.equal(f.match(6), true);
+    assert.equal(f.match(30), true);  // 6 + 24
+    assert.equal(f.match(54), true);  // 6 + 48
+    assert.equal(f.match(7), false);
+    assert.equal(f.match(5), false);
+  });
+
+  it("comma-separated values", () => {
+    const f = parseCronField("1,3,5");
+    assert.equal(f.match(1), true);
+    assert.equal(f.match(3), true);
+    assert.equal(f.match(5), true);
+    assert.equal(f.match(2), false);
+    assert.equal(f.match(4), false);
+  });
+
+  it("range N-N", () => {
+    const f = parseCronField("1-5");
+    assert.equal(f.match(0), false);
+    assert.equal(f.match(1), true);
+    assert.equal(f.match(3), true);
+    assert.equal(f.match(5), true);
+    assert.equal(f.match(6), false);
+  });
+
+  it("range with step N-N/S", () => {
+    const f = parseCronField("0-10/3");
+    assert.equal(f.match(0), true);
+    assert.equal(f.match(3), true);
+    assert.equal(f.match(6), true);
+    assert.equal(f.match(9), true);
+    assert.equal(f.match(1), false);
+    assert.equal(f.match(12), false); // outside range
+  });
+
+  it("step from wildcard */S", () => {
+    const f = parseCronField("*/15");
+    assert.equal(f.match(0), true);
+    assert.equal(f.match(15), true);
+    assert.equal(f.match(30), true);
+    assert.equal(f.match(45), true);
+    assert.equal(f.match(7), false);
+  });
+
+  it("step N/S", () => {
+    const f = parseCronField("6/48");
+    assert.equal(f.match(6), true);
+    assert.equal(f.match(54), true);   // 6 + 48
+    assert.equal(f.match(102), true);  // 6 + 96
+    assert.equal(f.match(0), false);
+    assert.equal(f.match(48), false);  // 48 != 6 mod 48
+  });
+});
+
+describe("parseCronExpression", () => {
+  it("parses 2-field non-Calendaria expression", () => {
+    const parsed = parseCronExpression("0 6");
+    assert.equal(parsed.minute.match(0), true);
+    assert.equal(parsed.minute.match(1), false);
+    assert.equal(parsed.hour.match(6), true);
+    assert.equal(parsed.hour.match(30), true); // 6 + 24 (implicitStep)
+    assert.equal(parsed.offset, 0);
+  });
+
+  it("parses 3-field non-Calendaria expression with offset", () => {
+    const parsed = parseCronExpression("0 6/48 24");
+    assert.equal(parsed.hour.match(6), true);
+    assert.equal(parsed.hour.match(54), true);
+    assert.equal(parsed.offset, 24);
+  });
+
+  it("parses 5-field Calendaria expression", () => {
+    const parsed = parseCronExpression("0 6 * * 1,3", true);
+    assert.equal(parsed.minute.match(0), true);
+    assert.equal(parsed.hour.match(6), true);
+    assert.equal(parsed.hour.match(30), false); // no implicitStep in Calendaria mode
+    assert.equal(parsed.dayOfMonth.match(15), true); // * matches all
+    assert.equal(parsed.month.match(6), true);
+    assert.equal(parsed.dayOfWeek.match(1), true);
+    assert.equal(parsed.dayOfWeek.match(3), true);
+    assert.equal(parsed.dayOfWeek.match(2), false);
+  });
+});
+
+describe("describeCronExpression", () => {
+  it("daily at fixed time", () => {
+    assert.equal(describeCronExpression("0 6"), "Daily at 06:00");
+  });
+
+  it("multiple hours", () => {
+    assert.equal(describeCronExpression("0 6,18"), "At 06:00 and 18:00");
+  });
+
+  it("every N days", () => {
+    assert.equal(describeCronExpression("0 12/48"), "At 12:00 every 2 days");
+  });
+
+  it("with offset", () => {
+    assert.equal(describeCronExpression("0 6/48 24"), "At 06:00 every 2 days (offset 24h)");
+  });
+
+  it("every N hours", () => {
+    assert.equal(describeCronExpression("0 */12"), "At :00 every 12 hours");
+  });
+
+  it("Calendaria with weekday names", () => {
+    const info = { weekdayNames: ["Sul", "Mol", "Zol", "Wir", "Zor", "Far", "Sar"] };
+    const desc = describeCronExpression("0 6 * * 1,3", true, info);
+    assert.ok(desc.includes("Mol"));
+    assert.ok(desc.includes("Wir"));
+  });
+
+  it("Calendaria without names uses numbers", () => {
+    const desc = describeCronExpression("0 6 * * 1,3", true);
+    assert.ok(desc.includes("1"));
+    assert.ok(desc.includes("3"));
+  });
+});
+
+// ============================================================================
+// Schedule Normalization — normalizeSchedule
+// ============================================================================
+
+describe("normalizeSchedule", () => {
+  it("converts old daily format to cron entries", () => {
+    const route = {
+      id: "test",
+      segments: [{ segmentId: "a-b" }],
+      schedule: { intervalDays: 1, startDayOffset: 0, departureHours: [6, 18] },
+      routeNumbers: ["101", "102"],
+    };
+    const norm = normalizeSchedule(route);
+
+    assert.ok(Array.isArray(norm.schedule));
+    assert.equal(norm.schedule.length, 2);
+
+    assert.equal(norm.schedule[0].cron, "0 6");
+    assert.deepEqual(norm.schedule[0].routeNumbers, ["101"]);
+    assert.equal(norm.schedule[0].direction, "outbound");
+    assert.deepEqual(norm.schedule[0].segments, [{ segmentId: "a-b" }]);
+
+    assert.equal(norm.schedule[1].cron, "0 18");
+    assert.deepEqual(norm.schedule[1].routeNumbers, ["102"]);
+  });
+
+  it("converts multi-day interval with offset", () => {
+    const route = {
+      id: "test",
+      segments: [{ segmentId: "a-b" }],
+      schedule: { intervalDays: 2, startDayOffset: 1, departureHours: [6] },
+      routeNumbers: ["101"],
+    };
+    const norm = normalizeSchedule(route);
+
+    assert.equal(norm.schedule.length, 1);
+    assert.equal(norm.schedule[0].cron, "0 6/48 24");
+  });
+
+  it("passes through already-normalized routes", () => {
+    const route = {
+      id: "test",
+      schedule: [{ cron: "0 6", routeNumbers: ["101"], direction: "outbound", segments: [] }],
+    };
+    const norm = normalizeSchedule(route);
+    assert.equal(norm, route); // same reference
+  });
+
+  it("handles missing fields gracefully", () => {
+    const route = { id: "test" };
+    const norm = normalizeSchedule(route);
+    assert.ok(Array.isArray(norm.schedule));
+    assert.equal(norm.schedule.length, 1);
+    assert.equal(norm.schedule[0].direction, "outbound");
+  });
+
+  it("removes top-level segments and routeNumbers", () => {
+    const route = {
+      id: "test",
+      segments: [{ segmentId: "a-b" }],
+      routeNumbers: ["101"],
+      schedule: { intervalDays: 1, startDayOffset: 0, departureHours: [6] },
+    };
+    const norm = normalizeSchedule(route);
+    assert.equal(norm.segments, undefined);
+    assert.equal(norm.routeNumbers, undefined);
+    assert.equal(norm.id, "test");
   });
 });

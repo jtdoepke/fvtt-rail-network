@@ -320,38 +320,82 @@ export function getTrainPosition(legs, totalJourneySeconds, elapsedSeconds) {
 /**
  * Finds ALL active departures for a route at the given world time.
  *
+ * Accepts cron-based schedule patterns (new format). Each pattern specifies
+ * timing, route numbers, direction, and segments.
+ *
  * @param {number} worldTime - Current world time in seconds
- * @param {{ intervalDays: number, startDayOffset: number, departureHours: number[] }} schedule
- * @param {number} maxJourneySeconds - Total journey duration
- * @returns {Array<{ departureTime: number, elapsed: number }>} Sorted by most recent first
+ * @param {Array<{ cron: string, routeNumbers?: string[], direction?: string, segments?: Array }>} schedulePatterns
+ * @param {number} maxJourneySeconds - Maximum journey duration (for lookback window)
+ * @param {Function} [calendarDecomposer] - Optional (worldTime) → { minute, hour, dayOfMonth, month, dayOfWeek }
+ * @returns {Array<{ departureTime, elapsed, routeNum, direction, segments }>} Sorted by most recent first
  */
-export function findAllActiveDepartures(worldTime, schedule, maxJourneySeconds) {
-  const currentDay = Math.floor(worldTime / SECONDS_PER_DAY);
-  const lookbackDays = Math.ceil(maxJourneySeconds / SECONDS_PER_DAY) + 1;
-  const hours = [...schedule.departureHours].sort((a, b) => b - a); // descending
+export function findAllActiveDepartures(worldTime, schedulePatterns, maxJourneySeconds, calendarDecomposer) {
   const results = [];
+  const seen = new Set();
+  const lookbackSeconds = maxJourneySeconds;
+  const startTime = worldTime - lookbackSeconds;
 
-  for (let dayOffset = 0; dayOffset <= lookbackDays; dayOffset++) {
-    const checkDay = currentDay - dayOffset;
-    if (checkDay < 0) continue;
+  for (const pattern of schedulePatterns) {
+    const hasCalendaria = !!calendarDecomposer;
+    const parsed = parseCronExpression(pattern.cron, hasCalendaria);
+    const offset = parsed.offset || 0;
 
-    // Is this a run day?
-    const cycleDelta = checkDay - (schedule.startDayOffset ?? 0);
-    const mod = ((cycleDelta % schedule.intervalDays) + schedule.intervalDays) % schedule.intervalDays;
-    if (mod !== 0) continue;
+    // Iterate through candidate departure times in the lookback window.
+    // We check each minute boundary from startTime to worldTime.
+    // Optimization: step by matching minutes within each hour.
 
-    for (const hour of hours) {
-      const departureTime = checkDay * SECONDS_PER_DAY + hour * SECONDS_PER_HOUR;
-      if (departureTime > worldTime) continue; // hasn't departed yet
+    // Determine the range of absolute hours to check
+    const firstHour = Math.floor(Math.max(0, startTime) / SECONDS_PER_HOUR);
+    const lastHour = Math.floor(worldTime / SECONDS_PER_HOUR);
 
-      const elapsed = worldTime - departureTime;
-      if (elapsed >= 0 && elapsed < maxJourneySeconds) {
-        results.push({ departureTime, elapsed });
+    for (let absHour = firstHour; absHour <= lastHour; absHour++) {
+      // Check hour match (adjusted for offset in non-Calendaria mode)
+      const adjustedHour = absHour - offset;
+      if (!hasCalendaria && !parsed.hour.match(adjustedHour)) continue;
+
+      // For Calendaria mode, check hour within the day (0-23)
+      if (hasCalendaria) {
+        const hourInDay = absHour % 24;
+        if (!parsed.hour.match(hourInDay)) continue;
+      }
+
+      // Check minutes 0-59 for this hour
+      for (let minute = 0; minute < 60; minute++) {
+        if (!parsed.minute.match(minute)) continue;
+
+        const departureTime = absHour * SECONDS_PER_HOUR + minute * 60;
+        if (departureTime > worldTime) continue;
+        if (departureTime < Math.max(0, startTime)) continue;
+
+        // Calendaria: check day/month/weekday
+        if (hasCalendaria) {
+          const cal = calendarDecomposer(departureTime);
+          if (!parsed.dayOfMonth.match(cal.dayOfMonth)) continue;
+          if (!parsed.month.match(cal.month)) continue;
+          if (!parsed.dayOfWeek.match(cal.dayOfWeek)) continue;
+        }
+
+        // Deduplicate by departureTime (first pattern wins)
+        if (seen.has(departureTime)) continue;
+        seen.add(departureTime);
+
+        const elapsed = worldTime - departureTime;
+
+        // Resolve route number from the pattern's routeNumbers array.
+        // For patterns with multiple departure hours, map by minute+hour match index.
+        const routeNum = pattern.routeNumbers?.[0] ?? "?";
+
+        results.push({
+          departureTime,
+          elapsed,
+          routeNum,
+          direction: pattern.direction ?? "outbound",
+          segments: pattern.segments,
+        });
       }
     }
   }
 
-  // Sort by most recent (smallest elapsed) first
   results.sort((a, b) => a.elapsed - b.elapsed);
   return results;
 }
@@ -432,52 +476,101 @@ export function applyEvents(activeEvents, departureTime, elapsed, legs, worldTim
  * Computes the desired token state for a single route at a given world time.
  * Pure function — no Foundry API calls.
  *
- * @param {Object} route - Route config (segments, schedule, tokenPrototype, routeNumbers)
+ * @param {Object} route - Route config (schedule array of trips, tokenPrototype)
  * @param {number} worldTime - Current world time
  * @param {Array} allEvents - All stored events
+ * @param {Object} [opts] - Options
+ * @param {Function} [opts.pathResolver] - (segments, worldTime) → path array. Required for Drawing-based segments.
+ * @param {Function} [opts.calendarDecomposer] - (worldTime) → { minute, hour, dayOfMonth, month, dayOfWeek }
  * @returns {Array<{ routeId, departureTime, name, x, y, atStation, texture, width, height }>}
  */
-export function computeDesiredTokens(route, worldTime, allEvents) {
-  const path = resolveRoutePath(route.segments, worldTime);
-  if (path.length < 2) return [];
+export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
+  const normalized = normalizeSchedule(route);
+  const { pathResolver, calendarDecomposer } = opts;
 
-  const { legs, totalJourneySeconds } = buildRouteSegments(path);
-  if (legs.length === 0) return [];
-
-  const activeEvents = getActiveEvents(allEvents, route.id, worldTime);
+  const activeEvents = getActiveEvents(allEvents, normalized.id, worldTime);
 
   // closeLine → no departures
   if (activeEvents.some(e => e.type === "closeLine")) return [];
 
-  // Find scheduled + extra departures
-  const scheduled = findAllActiveDepartures(worldTime, route.schedule, totalJourneySeconds);
-  const extras = findExtraDepartures(activeEvents, worldTime, legs);
+  // We need a max journey time for the lookback window.
+  // Compute it from the first trip's path as an estimate, then refine per-departure.
+  // Use a generous default if no path resolves.
+  let maxJourneySeconds = 24 * SECONDS_PER_HOUR; // default 24h lookback
+
+  // Cache resolved path+legs by segments+direction key
+  const pathCache = new Map();
+  const resolveTrip = (segments, direction) => {
+    const key = JSON.stringify(segments) + "|" + (direction ?? "outbound");
+    if (pathCache.has(key)) return pathCache.get(key);
+
+    let path;
+    if (pathResolver) {
+      path = pathResolver(segments, worldTime);
+    } else {
+      // Fallback: resolve from inline paths
+      path = resolveRoutePath(segments, worldTime);
+    }
+
+    if (!path || path.length < 2) {
+      pathCache.set(key, null);
+      return null;
+    }
+
+    const directedPath = applyDirection(path, direction);
+    const result = buildRouteSegments(directedPath);
+    if (result.legs.length === 0) {
+      pathCache.set(key, null);
+      return null;
+    }
+
+    pathCache.set(key, result);
+    return result;
+  };
+
+  // Try to get a better maxJourneySeconds from the first resolvable trip
+  for (const trip of normalized.schedule) {
+    const resolved = resolveTrip(trip.segments, trip.direction);
+    if (resolved) {
+      maxJourneySeconds = Math.max(maxJourneySeconds, resolved.totalJourneySeconds);
+    }
+  }
+
+  // Find scheduled departures across all trips
+  const scheduled = findAllActiveDepartures(worldTime, normalized.schedule, maxJourneySeconds, calendarDecomposer);
+
+  // Extra departures (from events) need legs for the default path
+  const firstTrip = normalized.schedule[0];
+  const defaultResolved = firstTrip ? resolveTrip(firstTrip.segments, firstTrip.direction) : null;
+  const extras = defaultResolved
+    ? findExtraDepartures(activeEvents, worldTime, defaultResolved.legs).map(dep => ({
+        ...dep,
+        routeNum: "X",
+        direction: firstTrip.direction,
+        segments: firstTrip.segments,
+      }))
+    : [];
+
   const allDepartures = [...scheduled, ...extras];
 
   const results = [];
-  const proto = route.tokenPrototype;
-  const hours = route.schedule.departureHours;
+  const proto = normalized.tokenPrototype;
 
   for (const dep of allDepartures) {
+    const resolved = resolveTrip(dep.segments, dep.direction);
+    if (!resolved) continue;
+
+    const { legs, totalJourneySeconds } = resolved;
     const { skip, adjustedElapsed } = applyEvents(activeEvents, dep.departureTime, dep.elapsed, legs, worldTime);
     if (skip) continue;
 
     const pos = getTrainPosition(legs, totalJourneySeconds, adjustedElapsed);
-    if (!pos) continue; // journey complete
+    if (!pos) continue;
 
-    // Determine route number: match departure hour index to routeNumbers
-    let routeNum;
-    if (dep.startStationName) {
-      // Extra departure — no route number mapping, use route ID
-      routeNum = "X";
-    } else {
-      const depHour = ((dep.departureTime % SECONDS_PER_DAY) / SECONDS_PER_HOUR);
-      const hourIdx = hours.indexOf(depHour);
-      routeNum = (route.routeNumbers && hourIdx >= 0) ? route.routeNumbers[hourIdx] : "?";
-    }
+    const routeNum = dep.startStationName ? "X" : (dep.routeNum ?? "?");
 
     results.push({
-      routeId: route.id,
+      routeId: normalized.id,
       departureTime: dep.departureTime,
       name: `Route ${routeNum} -- ${proto.name}`,
       x: pos.x,
@@ -490,4 +583,337 @@ export function computeDesiredTokens(route, worldTime, allEvents) {
   }
 
   return results;
+}
+
+// ============================================================================
+// PATH DIRECTION — reverse and round-trip path transforms
+// ============================================================================
+
+/**
+ * Reverses a resolved path array, shifting hoursFromPrev values so that
+ * travel times between stations remain correct in the new direction.
+ *
+ * @param {Array} path - Ordered array of station/waypoint nodes
+ * @returns {Array} Reversed path with corrected hoursFromPrev
+ */
+export function reversePath(path) {
+  const reversed = [...path].reverse();
+
+  // Collect original station hoursFromPrev in order.
+  // In the original: origStations[k].hoursFromPrev = travel time from station k-1 to k.
+  // In reversed: travel from reversed station j to j+1 = travel from
+  //   origStation[n-1-j] to origStation[n-2-j] = origStation[n-1-j].hoursFromPrev.
+  // So reversed station j+1 gets hoursFromPrev = origStations[n-1-j].hoursFromPrev.
+  // Equivalently: reversedHours[j] for j>=1 = origStations[n-j].hoursFromPrev.
+  const origStations = path.filter(n => "station" in n);
+  const n = origStations.length;
+  const reversedHours = [0];
+  for (let j = 1; j < n; j++) {
+    reversedHours.push(origStations[n - j].hoursFromPrev ?? 0);
+  }
+
+  let stationIdx = 0;
+  return reversed.map(node => {
+    if ("station" in node) {
+      const newNode = { ...node, hoursFromPrev: reversedHours[stationIdx] };
+      stationIdx++;
+      return newNode;
+    }
+    return { ...node };
+  });
+}
+
+/**
+ * Apply a direction transform to a resolved path.
+ *
+ * @param {Array} path - Resolved path array
+ * @param {string} direction - "outbound", "return", or "roundtrip"
+ * @returns {Array} Transformed path
+ */
+export function applyDirection(path, direction) {
+  if (!direction || direction === "outbound") return path;
+  if (direction === "return") return reversePath(path);
+  if (direction === "roundtrip") {
+    const rev = reversePath(path);
+    // Drop the first station of the reversed path (it's the same as the last
+    // station of the outbound path — the turnaround point). The outbound's
+    // last station provides the dwell time at the turnaround.
+    return [...path, ...rev.slice(1)];
+  }
+  return path;
+}
+
+// ============================================================================
+// CRON PARSER — schedule expression parsing and matching
+// ============================================================================
+
+/**
+ * Parse a single cron field string into a matcher function.
+ *
+ * Supports: *, N, N,N, N-N, N/S, N-N/S, * /S
+ *
+ * @param {string} field - Cron field expression
+ * @param {object} [opts] - Options
+ * @param {number} [opts.implicitStep] - For bare numbers, wrap with this step
+ *   (e.g., implicitStep=24 makes "6" behave like "6/24")
+ * @returns {{ match: (value: number) => boolean, step?: number, start?: number }}
+ */
+export function parseCronField(field, opts = {}) {
+  const { implicitStep } = opts;
+  field = String(field).trim();
+
+  // Wildcard: *
+  if (field === "*") {
+    return { match: () => true };
+  }
+
+  // Step from wildcard: */S
+  if (field.startsWith("*/")) {
+    const step = Number(field.slice(2));
+    return { match: (v) => v % step === 0, step, start: 0 };
+  }
+
+  // Comma-separated values: N,N,N (no step)
+  if (field.includes(",") && !field.includes("/")) {
+    const values = new Set(field.split(",").map(Number));
+    if (implicitStep) {
+      return {
+        match: (v) => {
+          for (const val of values) {
+            if (((v - val) % implicitStep + implicitStep) % implicitStep === 0 && v >= val) return true;
+          }
+          return false;
+        },
+        step: implicitStep,
+      };
+    }
+    return { match: (v) => values.has(v) };
+  }
+
+  // Range: N-N or N-N/S
+  if (field.includes("-")) {
+    const [rangePart, stepPart] = field.split("/");
+    const [lo, hi] = rangePart.split("-").map(Number);
+    const step = stepPart ? Number(stepPart) : 1;
+    return {
+      match: (v) => v >= lo && v <= hi && (v - lo) % step === 0,
+      step,
+      start: lo,
+    };
+  }
+
+  // Step: N/S
+  if (field.includes("/")) {
+    const [startStr, stepStr] = field.split("/");
+    const start = Number(startStr);
+    const step = Number(stepStr);
+    return {
+      match: (v) => ((v - start) % step + step) % step === 0 && v >= start,
+      step,
+      start,
+    };
+  }
+
+  // Bare number: N
+  const num = Number(field);
+  if (implicitStep) {
+    return {
+      match: (v) => ((v - num) % implicitStep + implicitStep) % implicitStep === 0 && v >= num,
+      step: implicitStep,
+      start: num,
+    };
+  }
+  return { match: (v) => v === num, start: num };
+}
+
+/**
+ * Parse a full cron expression.
+ *
+ * Without Calendaria (2-3 fields): "minute hour [offset]"
+ * With Calendaria (5 fields): "minute hour day-of-month month day-of-week"
+ *
+ * @param {string} expr - Cron expression string
+ * @param {boolean} hasCalendaria - Whether Calendaria fields are present
+ * @returns {object} Parsed cron with field matchers and offset
+ */
+export function parseCronExpression(expr, hasCalendaria = false) {
+  const parts = String(expr).trim().split(/\s+/);
+
+  if (hasCalendaria && parts.length >= 5) {
+    return {
+      minute: parseCronField(parts[0]),
+      hour: parseCronField(parts[1]),
+      dayOfMonth: parseCronField(parts[2]),
+      month: parseCronField(parts[3]),
+      dayOfWeek: parseCronField(parts[4]),
+      offset: 0,
+    };
+  }
+
+  // Non-Calendaria: hour field uses implicitStep=24
+  return {
+    minute: parseCronField(parts[0]),
+    hour: parseCronField(parts[1], { implicitStep: 24 }),
+    offset: parts[2] != null ? Number(parts[2]) : 0,
+  };
+}
+
+/**
+ * Generate a human-readable description of a cron expression.
+ *
+ * @param {string} expr - Cron expression string
+ * @param {boolean} hasCalendaria - Whether Calendaria fields are present
+ * @param {object} [calendarInfo] - Optional calendar metadata for readable names
+ * @param {string[]} [calendarInfo.weekdayNames] - Weekday names (0-indexed)
+ * @param {string[]} [calendarInfo.monthNames] - Month names (0-indexed)
+ * @returns {string} Human-readable description
+ */
+export function describeCronExpression(expr, hasCalendaria = false, calendarInfo) {
+  const parts = String(expr).trim().split(/\s+/);
+
+  const describeField = (field) => {
+    field = String(field).trim();
+    if (field === "*") return null;
+    if (field.startsWith("*/")) return { every: Number(field.slice(2)) };
+    if (field.includes("/")) {
+      const [s, st] = field.split("/");
+      return { start: Number(s), every: Number(st) };
+    }
+    if (field.includes(",")) return { values: field.split(",").map(Number) };
+    if (field.includes("-")) {
+      const [lo, hi] = field.split("-").map(Number);
+      return { range: [lo, hi] };
+    }
+    return { value: Number(field) };
+  };
+
+  const pad = (n) => String(n).padStart(2, "0");
+  const minDesc = describeField(parts[0]);
+  const hourDesc = describeField(parts[1]);
+  const minVal = minDesc?.value ?? 0;
+
+  let timeStr = "";
+
+  if (hourDesc === null && minDesc === null) {
+    timeStr = "Every minute";
+  } else if (hourDesc === null) {
+    if (minDesc?.every) timeStr = `Every ${minDesc.every} minutes`;
+    else timeStr = `At minute ${minVal}`;
+  } else if (hourDesc?.value != null) {
+    // In non-Calendaria mode, a bare hour is implicitly daily (implicitStep=24)
+    const prefix = !hasCalendaria ? "Daily at" : "At";
+    timeStr = `${prefix} ${pad(hourDesc.value)}:${pad(minVal)}`;
+  } else if (hourDesc?.values) {
+    timeStr = `At ${hourDesc.values.map(h => `${pad(h)}:${pad(minVal)}`).join(" and ")}`;
+  } else if (hourDesc?.every) {
+    const days = hourDesc.every / 24;
+    if (Number.isInteger(days) && days > 1) {
+      const startHour = hourDesc.start ?? 0;
+      timeStr = `At ${pad(startHour)}:${pad(minVal)} every ${days} days`;
+    } else if (hourDesc.every === 24) {
+      const startHour = hourDesc.start ?? 0;
+      timeStr = `Daily at ${pad(startHour)}:${pad(minVal)}`;
+    } else {
+      timeStr = `At :${pad(minVal)} every ${hourDesc.every} hours`;
+    }
+  } else if (hourDesc?.range) {
+    timeStr = `At :${pad(minVal)} from hour ${hourDesc.range[0]} to ${hourDesc.range[1]}`;
+  }
+
+  if (!hasCalendaria || parts.length < 5) {
+    const offset = parts[2] != null ? Number(parts[2]) : 0;
+    if (offset > 0) timeStr += ` (offset ${offset}h)`;
+    return timeStr;
+  }
+
+  // Calendaria fields
+  const dayDesc = describeField(parts[2]);
+  const monthDesc = describeField(parts[3]);
+  const wdayDesc = describeField(parts[4]);
+
+  const constraints = [];
+
+  if (wdayDesc != null) {
+    const names = calendarInfo?.weekdayNames;
+    if (wdayDesc.values) {
+      const labels = names ? wdayDesc.values.map(v => names[v] ?? v) : wdayDesc.values;
+      constraints.push(`on ${labels.join(", ")}`);
+    } else if (wdayDesc.value != null) {
+      const label = names ? (names[wdayDesc.value] ?? wdayDesc.value) : wdayDesc.value;
+      constraints.push(`on ${label}`);
+    } else if (wdayDesc.every) {
+      constraints.push(`every ${wdayDesc.every} weekdays`);
+    }
+  }
+
+  if (dayDesc != null) {
+    if (dayDesc.value != null) constraints.push(`on day ${dayDesc.value}`);
+    else if (dayDesc.values) constraints.push(`on days ${dayDesc.values.join(", ")}`);
+    else if (dayDesc.every) constraints.push(`every ${dayDesc.every} days`);
+  }
+
+  if (monthDesc != null) {
+    const names = calendarInfo?.monthNames;
+    if (monthDesc.values) {
+      const labels = names ? monthDesc.values.map(v => names[v] ?? v) : monthDesc.values;
+      constraints.push(`in ${labels.join(", ")}`);
+    } else if (monthDesc.value != null) {
+      const label = names ? (names[monthDesc.value] ?? monthDesc.value) : monthDesc.value;
+      constraints.push(`in ${label}`);
+    }
+  }
+
+  return constraints.length ? `${timeStr} ${constraints.join(", ")}` : timeStr;
+}
+
+// ============================================================================
+// SCHEDULE NORMALIZATION — backward compatibility
+// ============================================================================
+
+/**
+ * Normalize a route's schedule from old format to new cron-based format.
+ * Idempotent — already-normalized routes pass through unchanged.
+ *
+ * @param {object} route - Route configuration object
+ * @returns {object} Route with normalized schedule (new object, original not mutated)
+ */
+export function normalizeSchedule(route) {
+  if (Array.isArray(route.schedule)) return route;
+
+  const sched = route.schedule ?? {};
+  const hours = sched.departureHours ?? [];
+  const interval = sched.intervalDays ?? 1;
+  const offset = sched.startDayOffset ?? 0;
+  const routeNums = route.routeNumbers ?? [];
+  const segments = route.segments ?? [];
+
+  const entries = hours.map((hour, i) => {
+    let cronHour;
+    if (interval === 1) {
+      cronHour = String(hour);
+    } else {
+      cronHour = `${hour}/${interval * 24}`;
+    }
+    const cronOffset = offset * 24;
+    const cron = cronOffset > 0 ? `0 ${cronHour} ${cronOffset}` : `0 ${cronHour}`;
+
+    return {
+      cron,
+      routeNumbers: routeNums[i] != null ? [routeNums[i]] : [],
+      direction: "outbound",
+      segments: segments.map(s => ({ ...s })),
+    };
+  });
+
+  if (entries.length === 0) {
+    entries.push({
+      cron: "0 6",
+      routeNumbers: [],
+      direction: "outbound",
+      segments: segments.map(s => ({ ...s })),
+    });
+  }
+
+  const { schedule: _, routeNumbers: __, segments: ___, ...rest } = route;
+  return { ...rest, schedule: entries };
 }

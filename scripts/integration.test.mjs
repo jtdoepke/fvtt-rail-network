@@ -282,27 +282,34 @@ describe("applyEvents", () => {
 
 describe("computeDesiredTokens", () => {
   // A simple route with inline path, daily schedule at 14:00
+  const testSegments = [
+    {
+      segmentId: "a-b",
+      path: [
+        { station: "A", x: 0, y: 0, dwellMinutes: 5 },
+        { station: "B", x: 300, y: 400, hoursFromPrev: 1, dwellMinutes: 10 },
+        { station: "C", x: 600, y: 400, hoursFromPrev: 2, dwellMinutes: 0 },
+      ],
+    },
+  ];
+
   function makeRoute() {
     return {
       id: "test-route",
-      segments: [
-        {
-          segmentId: "a-b",
-          path: [
-            { station: "A", x: 0, y: 0, dwellMinutes: 5 },
-            { station: "B", x: 300, y: 400, hoursFromPrev: 1, dwellMinutes: 10 },
-            { station: "C", x: 600, y: 400, hoursFromPrev: 2, dwellMinutes: 0 },
-          ],
-        },
-      ],
       tokenPrototype: {
         name: "Test Express",
         texture: { src: "icons/svg/lightning.svg" },
         width: 0.8,
         height: 0.8,
       },
-      routeNumbers: [1],
-      schedule: { intervalDays: 1, startDayOffset: 0, departureHours: [14] },
+      schedule: [
+        {
+          cron: "0 14",
+          routeNumbers: ["1"],
+          direction: "outbound",
+          segments: testSegments,
+        },
+      ],
     };
   }
 
@@ -382,8 +389,10 @@ describe("computeDesiredTokens", () => {
 
   it("assigns route numbers correctly with multiple departure hours", () => {
     const route = makeRoute();
-    route.schedule.departureHours = [14, 15];
-    route.routeNumbers = [1, 3];
+    route.schedule = [
+      { cron: "0 14", routeNumbers: ["1"], direction: "outbound", segments: testSegments },
+      { cron: "0 15", routeNumbers: ["3"], direction: "outbound", segments: testSegments },
+    ];
 
     // Day 5, 15:30 — both departures active (journey ~3.25h, both within window)
     const worldTime = 5 * SECONDS_PER_DAY + 15.5 * SECONDS_PER_HOUR;
