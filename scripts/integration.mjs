@@ -18,6 +18,7 @@ import {
   parseCronExpression,
   describeCronExpression,
   getPathCompassLabels,
+  findStationArrivalTime,
 } from "./engine.mjs";
 
 const MODULE_ID = "rail-network";
@@ -35,6 +36,14 @@ const _intendedPositions = new Map();
 let _updating = false;
 let _pendingWorldTime = null;
 let _tagSegmentHandler = null;
+let _tagSegmentHoverHandler = null;
+let _tagSegmentHoverHighlight = null;
+let _tagSegmentHoveredDrawing = null;
+let _awaitingDrawTrack = false;
+let _statusHandler = null;
+let _statusHoverHandler = null;
+let _statusHoverHighlight = null;
+let _statusHoveredTarget = null;
 
 const DELAYED_STATUS_ID = "rail-network-delayed";
 
@@ -266,7 +275,8 @@ async function updateAllTrains(worldTime) {
 
         const routeNum = dep.startStationName ? "X" : (dep.routeNum ?? "?");
         const tokenName = nameTemplate
-          .replace("[[name]]", protoToken.name ?? actor.name)
+          .replace("[[name]]", normalized.name || "Unnamed Route")
+          .replace("[[actor]]", protoToken.name ?? actor.name)
           .replace("[[routeNum]]", routeNum);
 
         allDesired.push({
@@ -325,6 +335,11 @@ async function updateAllTrains(worldTime) {
         }
         fireHook("trainDeparted", desired.routeId, desired.departureTime, desired.atStation, null);
       } else {
+        // Update token name if it changed
+        if (existing.name !== desired.name) {
+          await existing.update({ name: desired.name });
+        }
+
         // Check if movement needed
         const intended = _intendedPositions.get(existing.id) ?? { x: existing.x, y: existing.y };
         const dx = x - intended.x;
@@ -443,6 +458,310 @@ function formatWorldTime(t) {
   return `Day ${day}, ${String(hour).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
 }
 
+// ---------------------------------------------------------------------------
+// Route Status Tool — hit detection + info dialogs
+// ---------------------------------------------------------------------------
+
+function findManagedTokenAtPos(pos) {
+  return canvas.tokens?.placeables?.find(t => {
+    if (!t.document.flags?.[MODULE_ID]?.managed) return false;
+    const b = t.bounds;
+    return b && pos.x >= b.x && pos.x <= b.x + b.width
+            && pos.y >= b.y && pos.y <= b.y + b.height;
+  }) ?? null;
+}
+
+function findStationAtPos(pos, radius = 20) {
+  for (const d of (canvas.drawings?.placeables ?? [])) {
+    const stations = d.document.flags?.[MODULE_ID]?.stations;
+    if (!stations?.length) continue;
+    const doc = d.document;
+    const points = doc.shape.points;
+    for (const s of stations) {
+      if (!s.name) continue;
+      const sx = doc.x + points[s.pointIndex * 2];
+      const sy = doc.y + points[s.pointIndex * 2 + 1];
+      const dx = pos.x - sx;
+      const dy = pos.y - sy;
+      if (dx * dx + dy * dy <= radius * radius) {
+        return { stationName: s.name, x: sx, y: sy, drawing: d, pointIndex: s.pointIndex };
+      }
+    }
+  }
+  return null;
+}
+
+function formatDuration(seconds) {
+  if (seconds <= 0) return "now";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0 && m > 0) return `${h}h ${m}m`;
+  if (h > 0) return `${h}h`;
+  return `${m}m`;
+}
+
+/**
+ * Find current leg index and next station for a train given its adjusted elapsed time.
+ * Walks legs the same way getTrainPosition does.
+ */
+function findTrainLegInfo(legs, adjustedElapsed) {
+  let clock = 0;
+  for (let i = 0; i < legs.length; i++) {
+    const leg = legs[i];
+    // Dwell phase at start station
+    if (adjustedElapsed < clock + leg.dwellSeconds) {
+      return { legIndex: i, phase: "dwell", currentStation: leg.startStation.station, nextStation: leg.endStation.station };
+    }
+    clock += leg.dwellSeconds;
+    // Travel phase
+    if (adjustedElapsed < clock + leg.travelSeconds) {
+      return { legIndex: i, phase: "travel", currentStation: null, nextStation: leg.endStation.station };
+    }
+    clock += leg.travelSeconds;
+  }
+  // At final station
+  const lastLeg = legs[legs.length - 1];
+  return { legIndex: legs.length - 1, phase: "arrived", currentStation: lastLeg.endStation.station, nextStation: null };
+}
+
+async function showTrainInfoDialog(token) {
+  const flags = token.document.flags?.[MODULE_ID];
+  if (!flags) return;
+  const { routeId, departureTime, routeNum } = flags;
+  const worldTime = game.time.worldTime;
+  const routes = game.settings.get(MODULE_ID, "routes");
+  const allEvents = game.settings.get(MODULE_ID, "events");
+  const route = routes.find(r => r.id === routeId);
+
+  if (!route) {
+    ui.notifications.warn("Route not found for this train.");
+    return;
+  }
+
+  const normalized = normalizeSchedule(route);
+  const activeEvents = getActiveEvents(allEvents, routeId, worldTime);
+
+  // Find the matching trip by routeNum
+  let matchedTrip = normalized.schedule.find(t => t.routeNumbers?.includes(routeNum));
+  if (!matchedTrip) matchedTrip = normalized.schedule[0];
+  if (!matchedTrip) return;
+
+  const path = resolveRouteWithDrawings({ segments: matchedTrip.segments }, worldTime);
+  if (!path || path.length < 2) return;
+  const directedPath = applyDirection(path, matchedTrip.direction);
+  const { legs, totalJourneySeconds } = buildRouteSegments(directedPath);
+  if (legs.length === 0) return;
+
+  const elapsed = worldTime - departureTime;
+  const { adjustedElapsed } = applyEvents(activeEvents, departureTime, elapsed, legs, worldTime);
+
+  const legInfo = findTrainLegInfo(legs, adjustedElapsed);
+  const finalStation = legs[legs.length - 1].endStation.station;
+  const isDelayed = activeEvents.some(e => e.type === "delay" && e.target.departureTime === departureTime);
+
+  // Build status string
+  let statusText;
+  if (isDelayed && legInfo.currentStation) {
+    statusText = `Delayed at ${legInfo.currentStation}`;
+  } else if (legInfo.currentStation) {
+    statusText = `At ${legInfo.currentStation}`;
+  } else {
+    statusText = "En route";
+  }
+
+  // Next stop ETA
+  let nextStopHtml = "";
+  if (legInfo.nextStation) {
+    const arrivalTime = findStationArrivalTime(legs, legInfo.nextStation);
+    if (arrivalTime != null) {
+      const eta = arrivalTime - adjustedElapsed;
+      nextStopHtml = `<tr><td><b>Next Stop</b></td><td>${legInfo.nextStation} (${formatDuration(Math.max(0, eta))})</td></tr>`;
+    }
+  }
+
+  // Final destination ETA
+  let finalHtml = "";
+  if (finalStation !== legInfo.currentStation) {
+    const finalArrival = findStationArrivalTime(legs, finalStation);
+    if (finalArrival != null) {
+      const eta = finalArrival - adjustedElapsed;
+      finalHtml = `<tr><td><b>Destination</b></td><td>${finalStation} (${formatDuration(Math.max(0, eta))})</td></tr>`;
+    }
+  } else {
+    finalHtml = `<tr><td><b>Destination</b></td><td>${finalStation} (arrived)</td></tr>`;
+  }
+
+  // All stations with arrival times
+  const stationRows = [];
+  for (const leg of legs) {
+    const arrSec = findStationArrivalTime(legs, leg.startStation.station);
+    const isPast = arrSec != null && arrSec <= adjustedElapsed;
+    const isCurrent = leg.startStation.station === legInfo.currentStation;
+    const style = isCurrent ? 'font-weight:bold;' : isPast ? 'opacity:0.5;' : '';
+    const marker = isCurrent ? ' ◀' : '';
+    stationRows.push(`<tr style="${style}"><td>${leg.startStation.station}${marker}</td><td>${arrSec != null ? formatWorldTime(departureTime + arrSec) : '—'}</td></tr>`);
+  }
+  // Final station
+  const lastLeg = legs[legs.length - 1];
+  const finalArr = findStationArrivalTime(legs, lastLeg.endStation.station);
+  const isFinalCurrent = lastLeg.endStation.station === legInfo.currentStation;
+  const finalStyle = isFinalCurrent ? 'font-weight:bold;' : '';
+  const finalMarker = isFinalCurrent ? ' ◀' : '';
+  stationRows.push(`<tr style="${finalStyle}"><td>${lastLeg.endStation.station}${finalMarker}</td><td>${finalArr != null ? formatWorldTime(departureTime + finalArr) : '—'}</td></tr>`);
+
+  const content = `
+    <table style="width:100%;border-collapse:collapse;">
+      <tr><td><b>Train</b></td><td>${token.document.name}</td></tr>
+      <tr><td><b>Route</b></td><td>${normalized.name || "Unnamed Route"} #${routeNum}</td></tr>
+      <tr><td><b>Status</b></td><td>${statusText}${isDelayed ? ' ⏱' : ''}</td></tr>
+      <tr><td><b>Departed</b></td><td>${formatWorldTime(departureTime)}</td></tr>
+      ${nextStopHtml}
+      ${finalHtml}
+    </table>
+    <hr style="margin:8px 0;">
+    <details>
+      <summary style="cursor:pointer;font-weight:bold;">Station Schedule</summary>
+      <table style="width:100%;border-collapse:collapse;margin-top:4px;">
+        <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Station</th><th style="text-align:left;">Time</th></tr>
+        ${stationRows.join("")}
+      </table>
+    </details>
+  `;
+
+  foundry.applications.api.DialogV2.wait({
+    window: { title: `Train: ${token.document.name}` },
+    content,
+    buttons: [{ action: "close", label: "Close", default: true }],
+    rejectClose: false,
+  });
+}
+
+async function showStationInfoDialog(stationInfo) {
+  const { stationName } = stationInfo;
+  const worldTime = game.time.worldTime;
+  const routes = game.settings.get(MODULE_ID, "routes");
+  const allEvents = game.settings.get(MODULE_ID, "events");
+
+  const trainsHere = [];
+  const upcoming = [];
+
+  for (const route of routes) {
+    const normalized = normalizeSchedule(route);
+    const actor = game.actors?.get(normalized.actorId);
+    const activeEvents = getActiveEvents(allEvents, normalized.id, worldTime);
+    if (activeEvents.some(e => e.type === "closeLine")) continue;
+
+    for (const trip of normalized.schedule) {
+      const path = resolveRouteWithDrawings({ segments: trip.segments }, worldTime);
+      if (!path || path.length < 2) continue;
+      const directedPath = applyDirection(path, trip.direction);
+      const { legs, totalJourneySeconds } = buildRouteSegments(directedPath);
+      if (legs.length === 0) continue;
+
+      // Check if this trip's route passes through our station
+      const stationArrival = findStationArrivalTime(legs, stationName);
+      if (stationArrival == null) continue;
+
+      // Check active departures for trains currently here
+      const deps = findAllActiveDepartures(worldTime, [trip], totalJourneySeconds);
+      for (const dep of deps) {
+        const { adjustedElapsed } = applyEvents(activeEvents, dep.departureTime, dep.elapsed, legs, worldTime);
+        const pos = getTrainPosition(legs, totalJourneySeconds, adjustedElapsed);
+        if (pos?.atStation === stationName) {
+          const routeNum = dep.routeNum ?? "?";
+          const nameTemplate = normalized.nameTemplate ?? "[[name]] [[routeNum]]";
+          const protoName = actor?.prototypeToken?.name ?? actor?.name ?? "Unknown";
+          const tokenName = nameTemplate
+            .replace("[[name]]", normalized.name || "Unnamed Route")
+            .replace("[[actor]]", protoName)
+            .replace("[[routeNum]]", routeNum);
+          trainsHere.push({
+            name: tokenName,
+            route: normalized.name || "Unnamed Route",
+            routeNum,
+            direction: trip.direction ?? "outbound",
+          });
+        }
+      }
+
+      // Forward search for upcoming arrivals at this station (next 24h, limit 10)
+      const forwardLimit = worldTime + 24 * 3600;
+      const parsed = parseCronExpression(trip.cron, false);
+      const offset = parsed.offset || 0;
+      const currentHour = Math.floor(worldTime / 3600);
+      const maxHour = Math.floor(forwardLimit / 3600);
+
+      for (let absHour = currentHour; absHour <= maxHour && upcoming.length < 10; absHour++) {
+        const adjustedHour = absHour - offset;
+        if (!parsed.hour.match(adjustedHour)) continue;
+        for (let minute = 0; minute < 60; minute++) {
+          if (!parsed.minute.match(minute)) continue;
+          const depTime = absHour * 3600 + minute * 60;
+          if (depTime <= worldTime) continue;
+          // When will this departure arrive at our station?
+          const arrivalWorldTime = depTime + stationArrival;
+          if (arrivalWorldTime <= worldTime || arrivalWorldTime > forwardLimit) continue;
+          const routeNum = trip.routeNumbers?.[0] ?? "?";
+          upcoming.push({
+            route: normalized.name || "Unnamed Route",
+            routeNum,
+            direction: trip.direction ?? "outbound",
+            arrivalTime: arrivalWorldTime,
+            eta: arrivalWorldTime - worldTime,
+          });
+          break; // one departure per hour for this pattern
+        }
+      }
+    }
+  }
+
+  // Sort upcoming by arrival time
+  upcoming.sort((a, b) => a.arrivalTime - b.arrivalTime);
+
+  // Build HTML
+  let trainsHtml;
+  if (trainsHere.length === 0) {
+    trainsHtml = `<p style="opacity:0.6;">No trains currently at this station.</p>`;
+  } else {
+    const rows = trainsHere.map(t =>
+      `<tr><td>${t.name}</td><td>${t.route} #${t.routeNum}</td><td>${t.direction}</td></tr>`
+    ).join("");
+    trainsHtml = `
+      <table style="width:100%;border-collapse:collapse;">
+        <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Train</th><th style="text-align:left;">Route</th><th style="text-align:left;">Dir</th></tr>
+        ${rows}
+      </table>`;
+  }
+
+  let upcomingHtml;
+  if (upcoming.length === 0) {
+    upcomingHtml = `<p style="opacity:0.6;">No upcoming departures in the next 24 hours.</p>`;
+  } else {
+    const rows = upcoming.map(u =>
+      `<tr><td>${u.route} #${u.routeNum}</td><td>${u.direction}</td><td>${formatWorldTime(u.arrivalTime)}</td><td>${formatDuration(u.eta)}</td></tr>`
+    ).join("");
+    upcomingHtml = `
+      <table style="width:100%;border-collapse:collapse;">
+        <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Route</th><th style="text-align:left;">Dir</th><th style="text-align:left;">Arrives</th><th style="text-align:left;">ETA</th></tr>
+        ${rows}
+      </table>`;
+  }
+
+  const content = `
+    <h3 style="margin-top:0;">Trains Here</h3>
+    ${trainsHtml}
+    <h3>Upcoming Arrivals</h3>
+    ${upcomingHtml}
+  `;
+
+  foundry.applications.api.DialogV2.wait({
+    window: { title: `Station: ${stationName}` },
+    content,
+    buttons: [{ action: "close", label: "Close", default: true }],
+    rejectClose: false,
+  });
+}
+
 function buildSegmentOptions(selectedId) {
   const tagged = canvas.drawings?.placeables?.filter(
     d => d.document.flags?.[MODULE_ID]?.segmentId
@@ -505,6 +824,18 @@ const api = {
   /** Force-update all train positions now. */
   refresh() {
     updateAllTrains(game.time.worldTime);
+  },
+
+  /** Delete all managed tokens and recreate them from scratch. Picks up actor prototype changes. */
+  async hardRefresh() {
+    if (!game.user.isGM || !canvas?.scene) return;
+    const managed = canvas.scene.tokens.filter(t => t.flags?.[MODULE_ID]?.managed);
+    if (managed.length > 0) {
+      await canvas.scene.deleteEmbeddedDocuments("Token", managed.map(t => t.id));
+    }
+    _intendedPositions.clear();
+    await updateAllTrains(game.time.worldTime);
+    ui.notifications.info(`Rail Network: ${managed.length} token(s) recreated.`);
   },
 
   /** Log routes, active departures, tokens, and events to chat. */
@@ -1305,7 +1636,7 @@ const api = {
                  value="${existing?.nameTemplate ?? "[[name]] [[routeNum]]"}"
                  placeholder="[[name]] [[routeNum]]">
           <p class="hint" style="font-size:0.85em;opacity:0.7;margin:2px 0 0;">
-            Variables: <code>[[name]]</code> (actor token name), <code>[[routeNum]]</code> (route number)
+            Variables: <code>[[name]]</code> (route name), <code>[[actor]]</code> (actor name), <code>[[routeNum]]</code> (route number)
           </p>
         </div>
 
@@ -1686,7 +2017,7 @@ const api = {
       { name: "Rail: Edit Segment", command: `game.modules.get("${MODULE_ID}").api.editSegment()`, img: "fa-solid fa-pen" },
       { name: "Rail: Route Status", command: `game.modules.get("${MODULE_ID}").api.status()`, img: "fa-solid fa-clipboard-list" },
       { name: "Rail: Event Manager", command: `game.modules.get("${MODULE_ID}").api.eventListDialog()`, img: "fa-solid fa-calendar-exclamation" },
-      { name: "Rail: Refresh Trains", command: `game.modules.get("${MODULE_ID}").api.refresh()`, img: "fa-solid fa-train" },
+      { name: "Rail: Refresh Trains", command: `game.modules.get("${MODULE_ID}").api.hardRefresh()`, img: "fa-solid fa-train" },
     ];
     for (const m of macros) {
       await Macro.create({ name: m.name, type: "script", command: m.command, img: "icons/svg/lightning.svg" });
@@ -1727,26 +2058,160 @@ Hooks.on("canvasReady", () => {
 
   // Tag Segment tool: click a drawing on canvas to open the Tag Segment dialog.
   // Remove prior listener to avoid duplicates on scene change.
+  // Tag Segment: find drawing under cursor
+  const findDrawingAtPos = (pos) => canvas.drawings?.placeables?.find(d => {
+    const bounds = d.bounds;
+    return bounds && pos.x >= bounds.x && pos.x <= bounds.x + bounds.width
+                  && pos.y >= bounds.y && pos.y <= bounds.y + bounds.height;
+  });
+
+  const isTagSegmentActive = () =>
+    game.user.isGM && ui.controls?.activeControl === MODULE_ID && ui.controls?.activeTool === "tag-segment";
+
+  const clearHoverHighlight = () => {
+    if (_tagSegmentHoverHighlight) {
+      _tagSegmentHoverHighlight.destroy();
+      _tagSegmentHoverHighlight = null;
+    }
+    _tagSegmentHoveredDrawing = null;
+  };
+
+  // Click handler
   if (_tagSegmentHandler) canvas.stage.off("pointerdown", _tagSegmentHandler);
   _tagSegmentHandler = (event) => {
-    if (!game.user.isGM) return;
-    const activeControl = ui.controls?.activeControl;
-    const activeTool = ui.controls?.activeTool;
-    if (activeControl !== MODULE_ID || activeTool !== "tag-segment") return;
-
+    if (!isTagSegmentActive()) return;
     const pos = event.getLocalPosition(canvas.stage);
-    const drawing = canvas.drawings?.placeables?.find(d => {
-      const bounds = d.bounds;
-      return bounds && pos.x >= bounds.x && pos.x <= bounds.x + bounds.width
-                    && pos.y >= bounds.y && pos.y <= bounds.y + bounds.height;
-    });
-
+    const drawing = findDrawingAtPos(pos);
     if (drawing) {
       event.stopPropagation();
+      clearHoverHighlight();
       api.setupDialog(drawing.document);
     }
   };
   canvas.stage.on("pointerdown", _tagSegmentHandler);
+
+  // Hover handler — highlight drawing under cursor
+  if (_tagSegmentHoverHandler) canvas.stage.off("pointermove", _tagSegmentHoverHandler);
+  _tagSegmentHoverHandler = (event) => {
+    if (!isTagSegmentActive()) {
+      if (_tagSegmentHoverHighlight) clearHoverHighlight();
+      return;
+    }
+    const pos = event.getLocalPosition(canvas.stage);
+    const drawing = findDrawingAtPos(pos);
+
+    if (drawing === _tagSegmentHoveredDrawing) return; // no change
+    clearHoverHighlight();
+    if (!drawing) return;
+
+    _tagSegmentHoveredDrawing = drawing;
+    const doc = drawing.document;
+    const points = doc.shape.points;
+    if (!points || points.length < 4) return;
+
+    const g = new PIXI.Graphics();
+    // Glow layers (wide, transparent → narrow, opaque)
+    for (const { width, alpha } of [{ width: 12, alpha: 0.1 }, { width: 8, alpha: 0.2 }, { width: 5, alpha: 0.3 }]) {
+      g.lineStyle(width, 0xffcc00, alpha);
+      g.moveTo(doc.x + points[0], doc.y + points[1]);
+      for (let i = 2; i < points.length; i += 2) g.lineTo(doc.x + points[i], doc.y + points[i + 1]);
+    }
+    // Core line
+    g.lineStyle(3, 0xffcc00, 0.9);
+    g.moveTo(doc.x + points[0], doc.y + points[1]);
+    for (let i = 2; i < points.length; i += 2) g.lineTo(doc.x + points[i], doc.y + points[i + 1]);
+    canvas.controls.addChild(g);
+    _tagSegmentHoverHighlight = g;
+  };
+  canvas.stage.on("pointermove", _tagSegmentHoverHandler);
+
+  // Route Status tool: click a train token or station to see info
+  const isStatusActive = () =>
+    game.user.isGM && ui.controls?.activeControl === MODULE_ID && ui.controls?.activeTool === "status";
+
+  const clearStatusHighlight = () => {
+    if (_statusHoverHighlight) {
+      _statusHoverHighlight.destroy();
+      _statusHoverHighlight = null;
+    }
+    _statusHoveredTarget = null;
+  };
+
+  // Status click handler
+  if (_statusHandler) canvas.stage.off("pointerdown", _statusHandler);
+  _statusHandler = (event) => {
+    if (!isStatusActive()) return;
+    const pos = event.getLocalPosition(canvas.stage);
+    const token = findManagedTokenAtPos(pos);
+    if (token) {
+      event.stopPropagation();
+      clearStatusHighlight();
+      showTrainInfoDialog(token);
+      return;
+    }
+    const station = findStationAtPos(pos);
+    if (station) {
+      event.stopPropagation();
+      clearStatusHighlight();
+      showStationInfoDialog(station);
+    }
+  };
+  canvas.stage.on("pointerdown", _statusHandler);
+
+  // Status hover handler — highlight train tokens and stations
+  if (_statusHoverHandler) canvas.stage.off("pointermove", _statusHoverHandler);
+  _statusHoverHandler = (event) => {
+    if (!isStatusActive()) {
+      if (_statusHoverHighlight) clearStatusHighlight();
+      return;
+    }
+    const pos = event.getLocalPosition(canvas.stage);
+
+    // Check managed tokens first (they overlay stations)
+    const token = findManagedTokenAtPos(pos);
+    if (token) {
+      if (_statusHoveredTarget?.type === "train" && _statusHoveredTarget.ref === token) return;
+      clearStatusHighlight();
+      _statusHoveredTarget = { type: "train", ref: token };
+      const b = token.bounds;
+      const g = new PIXI.Graphics();
+      for (const { width, alpha } of [{ width: 12, alpha: 0.1 }, { width: 8, alpha: 0.2 }, { width: 5, alpha: 0.3 }]) {
+        g.lineStyle(width, 0xffcc00, alpha);
+        g.drawRect(b.x, b.y, b.width, b.height);
+      }
+      g.lineStyle(3, 0xffcc00, 0.9);
+      g.drawRect(b.x, b.y, b.width, b.height);
+      canvas.controls.addChild(g);
+      _statusHoverHighlight = g;
+      return;
+    }
+
+    // Check stations
+    const station = findStationAtPos(pos);
+    if (station) {
+      if (_statusHoveredTarget?.type === "station" && _statusHoveredTarget.ref?.stationName === station.stationName
+          && _statusHoveredTarget.ref?.x === station.x && _statusHoveredTarget.ref?.y === station.y) return;
+      clearStatusHighlight();
+      _statusHoveredTarget = { type: "station", ref: station };
+      const g = new PIXI.Graphics();
+      g.beginFill(0xffcc00, 0.1);
+      g.drawCircle(station.x, station.y, 20);
+      g.endFill();
+      g.beginFill(0xffcc00, 0.2);
+      g.drawCircle(station.x, station.y, 14);
+      g.endFill();
+      g.beginFill(0xffcc00, 0.5);
+      g.drawCircle(station.x, station.y, 8);
+      g.endFill();
+      canvas.controls.addChild(g);
+      _statusHoverHighlight = g;
+      return;
+    }
+
+    // Nothing under cursor — clear highlight
+    if (_statusHoveredTarget) clearStatusHighlight();
+  };
+  canvas.stage.on("pointermove", _statusHoverHandler);
 });
 
 // Drawing mutation hooks — invalidate cache and reposition tokens
@@ -1755,6 +2220,13 @@ Hooks.on("createDrawing", (drawing, options, userId) => {
   if (sid) {
     invalidateCache(sid);
     updateAllTrains(game.time.worldTime);
+  }
+
+  // Auto-open Tag Segment dialog after Draw Track
+  if (_awaitingDrawTrack && game.user.isGM && userId === game.user.id) {
+    _awaitingDrawTrack = false;
+    ui.controls.render({ control: MODULE_ID });
+    api.setupDialog(drawing);
   }
 });
 
@@ -1774,6 +2246,17 @@ Hooks.on("deleteDrawing", (drawing, options, userId) => {
   }
 });
 
+// Clear Draw Track flag when user switches away from the drawings polygon tool
+Hooks.on("renderSceneControls", (app, element, data) => {
+  if (!_awaitingDrawTrack) return;
+  const change = data.activationChange;
+  if (!change) return;
+  if (change.controlChange || change.toolChange) {
+    const isDrawingPolygon = ui.controls?.activeControl === "drawings" && ui.controls?.activeTool === "polygon";
+    if (!isDrawingPolygon) _awaitingDrawTrack = false;
+  }
+});
+
 // Scene control buttons (GM only)
 Hooks.on("getSceneControlButtons", (controls) => {
   if (!game.user.isGM) return;
@@ -1783,17 +2266,34 @@ Hooks.on("getSceneControlButtons", (controls) => {
     title: "Rail Network",
     icon: "fa-solid fa-train",
     tools: {
-      refresh: {
-        name: "refresh",
+      status: {
+        name: "status",
         order: 1,
-        title: "Refresh Trains",
-        icon: "fa-solid fa-train",
-        onClick: () => api.refresh(),
+        title: "Status (click train or station)",
+        icon: "fa-solid fa-clipboard-list",
+        // Persistent tool — stays selected so user can click trains/stations
+      },
+      "draw-track": {
+        name: "draw-track",
+        order: 2,
+        title: "Draw Track",
+        icon: "fa-solid fa-draw-polygon",
+        onClick: () => {
+          _awaitingDrawTrack = true;
+          ui.controls.render({ control: "drawings", tool: "polygon" });
+        },
         button: true,
+      },
+      "tag-segment": {
+        name: "tag-segment",
+        order: 3,
+        title: "Tag Segment (click a drawing)",
+        icon: "fa-solid fa-route",
+        // Persistent tool — stays selected so user can click drawings on the canvas
       },
       routes: {
         name: "routes",
-        order: 2,
+        order: 4,
         title: "Manage Routes",
         icon: "fa-solid fa-map-signs",
         onClick: () => api.routeListDialog(),
@@ -1801,25 +2301,18 @@ Hooks.on("getSceneControlButtons", (controls) => {
       },
       events: {
         name: "events",
-        order: 3,
+        order: 5,
         title: "Event Manager",
         icon: "fa-solid fa-calendar-exclamation",
         onClick: () => api.eventListDialog(),
         button: true,
       },
-      "tag-segment": {
-        name: "tag-segment",
-        order: 4,
-        title: "Tag Segment (click a drawing)",
-        icon: "fa-solid fa-route",
-        // Not a button — stays selected so user can click drawings on the canvas
-      },
-      status: {
-        name: "status",
-        order: 5,
-        title: "Route Status",
-        icon: "fa-solid fa-clipboard-list",
-        onClick: () => api.status(),
+      refresh: {
+        name: "refresh",
+        order: 6,
+        title: "Refresh Trains",
+        icon: "fa-solid fa-train",
+        onClick: () => api.refresh(),
         button: true,
       },
     },

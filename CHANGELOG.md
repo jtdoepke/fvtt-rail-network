@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-04-05
+
+### Changed
+- `[[name]]` template variable now refers to the route name (added `[[actor]]` for actor name)
+- Existing token names update automatically when route name or template changes
+- Refresh Trains macro now performs a hard refresh (delete/recreate all tokens)
+- Token display settings (nameplate, disposition, etc.) come from the actor's prototype token config
+- Status tool (formerly Route Status): now an interactive canvas tool — click trains or stations for contextual info
+- Toolbar reordered: Status, Draw Track, Tag Segment, Manage Routes, Event Manager, Refresh Trains
+
+### Added
+- `hardRefresh()` API: deletes and recreates all managed tokens, picking up actor prototype changes
+- Draw Track tool: switches to polygon drawing mode, then auto-opens Tag Segment dialog when the drawing is complete
+- Tag Segment hover highlight: drawings glow yellow when hovered with the Tag Segment tool active
+- Train info popup: shows route, status, next stop, ETA, final destination, and full station schedule
+- Station info popup: shows trains currently dwelling and upcoming arrival schedule
+
 ## [0.0.9] - 2026-04-05
 
 ### Changed
@@ -121,7 +138,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional Sequencer and Calendaria module integration
 - GitHub Actions release workflow
 
-[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.10...HEAD
+[0.0.10]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.9...v0.0.10
 [0.0.9]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.6...v0.0.7
