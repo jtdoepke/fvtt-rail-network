@@ -878,6 +878,41 @@ async function showStationInfoDialog(stationInfo) {
         }
       }
 
+      // Check already-departed trains approaching this station
+      for (const dep of deps) {
+        const { adjustedElapsed, skip } = applyEvents(activeEvents, dep.departureTime, dep.elapsed, legs, worldTime);
+        if (skip) continue;
+
+        const routeNum = dep.routeNum ?? "?";
+        const routeName = normalized.name || "Unnamed Route";
+        const dir = dep.direction ?? "outbound";
+
+        // Train hasn't reached this station yet → upcoming arrival
+        if (stationArrival > 0 && adjustedElapsed < stationArrival && upcomingArrivals.length < 10) {
+          const eta = stationArrival - adjustedElapsed;
+          upcomingArrivals.push({
+            route: routeName,
+            routeNum,
+            direction: dir,
+            arrivalTime: worldTime + eta,
+            eta,
+          });
+        }
+
+        // Train hasn't departed this station yet → upcoming departure
+        const stationDepartureElapsed = stationArrival + stationDwell;
+        if (!isFinalStop && adjustedElapsed < stationDepartureElapsed && upcomingDepartures.length < 10) {
+          const eta = stationDepartureElapsed - adjustedElapsed;
+          upcomingDepartures.push({
+            route: routeName,
+            routeNum,
+            direction: dir,
+            departureTime: worldTime + eta,
+            eta,
+          });
+        }
+      }
+
       // Forward search for upcoming arrivals/departures at this station (next 24h, limit 10 each)
       const forwardLimit = worldTime + 24 * 3600;
       const parsed = parseCronExpression(trip.cron, false);

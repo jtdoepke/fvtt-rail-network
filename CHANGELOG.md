@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Station Status tool now shows en-route trains in Upcoming Arrivals and Upcoming Departures (previously only showed future scheduled departures, missing trains already in transit)
+
 ## [0.0.13] - 2026-04-06
 
 ### Added
