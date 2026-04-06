@@ -18,6 +18,8 @@ import {
   describeCronExpression,
   getPathCompassLabels,
   findStationArrivalTime,
+  convertSpeedToPixelsPerHour,
+  pixelDistanceToWorldDistance,
 } from "./engine.mjs";
 
 const MODULE_ID = "rail-network";
@@ -31,6 +33,28 @@ const _pathCache = new Map();
 
 /** @type {Map<string, {x: number, y: number}>} tokenId → intended position */
 const _intendedPositions = new Map();
+
+/**
+ * Compute pixelsPerHour for a route if it uses actor-speed mode.
+ * Returns null when the route uses manual hoursFromPrev or when
+ * the actor/scene data is unavailable.
+ */
+function getPixelsPerHour(route) {
+  if (!route.useActorSpeed) return null;
+  const actor = game.actors?.get(route.actorId);
+  const speed = actor?.system?.attributes?.travel?.speeds?.land;
+  const speedUnits = actor?.system?.attributes?.travel?.units;
+  const grid = canvas.scene?.grid;
+  if (!speed || !speedUnits || !grid) return null;
+  const pph = convertSpeedToPixelsPerHour(speed, speedUnits, grid.size, grid.distance, grid.units);
+  if (!pph) {
+    console.warn(
+      `${MODULE_ID} | Route "${route.id}": useActorSpeed enabled but could not resolve speed ` +
+        `(${speed} ${speedUnits}, grid: ${grid.distance} ${grid.units})`,
+    );
+  }
+  return pph;
+}
 
 let _updating = false;
 let _pendingWorldTime = null;
@@ -238,7 +262,7 @@ async function updateAllTrains(worldTime) {
           return null;
         }
         const directedPath = applyDirection(path, direction);
-        const result = buildRouteSegments(directedPath);
+        const result = buildRouteSegments(directedPath, getPixelsPerHour(normalized));
         if (result.legs.length === 0) {
           tripCache.set(key, null);
           return null;
@@ -661,7 +685,7 @@ async function showTrainInfoDialog(token) {
   const path = resolveRouteWithDrawings({ segments: matchedTrip.segments }, worldTime);
   if (!path || path.length < 2) return;
   const directedPath = applyDirection(path, matchedTrip.direction);
-  const { legs } = buildRouteSegments(directedPath);
+  const { legs } = buildRouteSegments(directedPath, getPixelsPerHour(normalized));
   if (legs.length === 0) return;
 
   const elapsed = worldTime - departureTime;
@@ -808,7 +832,7 @@ async function showStationInfoDialog(stationInfo) {
       const path = resolveRouteWithDrawings({ segments: trip.segments }, worldTime);
       if (!path || path.length < 2) continue;
       const directedPath = applyDirection(path, trip.direction);
-      const { legs, totalJourneySeconds } = buildRouteSegments(directedPath);
+      const { legs, totalJourneySeconds } = buildRouteSegments(directedPath, getPixelsPerHour(normalized));
       if (legs.length === 0) continue;
 
       // Check if this trip's route passes through our station
@@ -1095,7 +1119,8 @@ const api = {
         const path = resolveRouteWithDrawings({ segments: trip.segments }, worldTime);
         if (path.length < 2) continue;
         const directedPath = applyDirection(path, trip.direction);
-        const { legs, totalJourneySeconds } = buildRouteSegments(directedPath);
+        const pph = getPixelsPerHour(normalized);
+        const { legs, totalJourneySeconds } = buildRouteSegments(directedPath, pph);
         const stationNames = legs.map((l) => l.startStation.station);
         stationNames.push(legs[legs.length - 1].endStation.station);
         const desc = describeCronExpression(trip.cron, !!getCalendaria(), getCalendarInfo());
@@ -1114,11 +1139,12 @@ const api = {
       }
 
       // Count total active departures across all trips
+      const pph = getPixelsPerHour(normalized);
       let maxJourney = 24 * 3600;
       for (const trip of normalized.schedule) {
         const path = resolveRouteWithDrawings({ segments: trip.segments }, worldTime);
         if (path.length >= 2) {
-          const { totalJourneySeconds } = buildRouteSegments(applyDirection(path, trip.direction));
+          const { totalJourneySeconds } = buildRouteSegments(applyDirection(path, trip.direction), pph);
           maxJourney = Math.max(maxJourney, totalJourneySeconds);
         }
       }
@@ -1680,6 +1706,30 @@ const api = {
       });
     }
 
+    // Pre-compute cumulative pixel distance from previous named station for each point
+    const grid = canvas.scene?.grid;
+    const gridUnits = grid?.units ?? "";
+    const distFromPrevStation = new Array(numPoints).fill(null);
+    let lastStationIdx = -1;
+    let cumPixelDist = 0;
+    for (let i = 0; i < numPoints; i++) {
+      if (i > 0) {
+        const dx = absPoints[i].x - absPoints[i - 1].x;
+        const dy = absPoints[i].y - absPoints[i - 1].y;
+        cumPixelDist += Math.sqrt(dx * dx + dy * dy);
+      }
+      const isStation = stationMap.has(i);
+      if (isStation && lastStationIdx >= 0) {
+        distFromPrevStation[i] = grid
+          ? pixelDistanceToWorldDistance(cumPixelDist, grid.size, grid.distance)
+          : cumPixelDist;
+      }
+      if (isStation) {
+        lastStationIdx = i;
+        cumPixelDist = 0;
+      }
+    }
+
     let pointRows = "";
     for (let i = 0; i < numPoints; i++) {
       const { x: absX, y: absY } = absPoints[i];
@@ -1687,11 +1737,14 @@ const api = {
       const name = existing?.name ?? "";
       const hours = existing?.hoursFromPrev ?? "";
       const dwell = existing?.dwellMinutes ?? "";
+      const dist = distFromPrevStation[i];
+      const distLabel = dist != null ? `${Math.round(dist)} ${gridUnits}` : "—";
 
       pointRows += `
         <tr data-point-index="${i}" data-point-x="${absX}" data-point-y="${absY}">
           <td>${i}</td>
           <td>(${absX}, ${absY})</td>
+          <td style="opacity:0.7;font-size:0.9em;text-align:right;">${distLabel}</td>
           <td><input type="text" name="name_${i}" value="${name}" size="12" placeholder="Station name"></td>
           <td><input type="number" name="hours_${i}" value="${hours}" step="0.1" size="6" placeholder="Travel hrs"></td>
           <td><input type="number" name="dwell_${i}" value="${dwell}" step="1" size="4" placeholder="Minutes"></td>
@@ -1714,7 +1767,7 @@ const api = {
         </div>
         <table class="rail-segment-table">
           <thead>
-            <tr><th>#</th><th>Position</th><th>Name</th><th>Hours from Prev</th><th>Dwell (min)</th></tr>
+            <tr><th>#</th><th>Position</th><th>Dist</th><th>Name</th><th>Hours from Prev</th><th>Dwell (min)</th></tr>
           </thead>
           <tbody>${pointRows}</tbody>
         </table>
@@ -1924,6 +1977,18 @@ const api = {
           <div class="actor-preview" style="display:flex;align-items:center;gap:8px;justify-content:center;"></div>
         </div>
         <div class="form-group">
+          <label style="display:flex;align-items:center;gap:6px;">
+            <input type="checkbox" name="useActorSpeed" value="true"
+                   ${existing?.useActorSpeed ? "checked" : ""}>
+            Use actor travel speed and scene grid size
+          </label>
+          <p class="hint" style="font-size:0.85em;opacity:0.7;margin:2px 0 0;">
+            When checked, travel time between stations is calculated from the actor's
+            travel speed and the scene grid scale instead of manual "Hours from Prev" values.
+          </p>
+          <div class="speed-info" style="font-size:0.85em;margin-top:4px;font-style:italic;"></div>
+        </div>
+        <div class="form-group">
           <label>Name Template</label>
           <input type="text" name="nameTemplate"
                  value="${existing?.nameTemplate ?? "[[name]] [[routeNum]]"}"
@@ -2011,7 +2076,43 @@ const api = {
           }
         };
         updateActorPreview(existing?.actorId);
-        actorSelect.addEventListener("change", () => updateActorPreview(actorSelect.value));
+        actorSelect.addEventListener("change", () => {
+          updateActorPreview(actorSelect.value);
+          updateSpeedInfo();
+        });
+
+        // Speed info updater
+        const speedCheckbox = form.querySelector('[name="useActorSpeed"]');
+        const speedInfoEl = form.querySelector(".speed-info");
+        const updateSpeedInfo = () => {
+          const checked = speedCheckbox?.checked;
+          const actorId = actorSelect.value;
+          if (!checked || !actorId) {
+            speedInfoEl.textContent = "";
+            return;
+          }
+          const actor = game.actors.get(actorId);
+          const speed = actor?.system?.attributes?.travel?.speeds?.land;
+          const units = actor?.system?.attributes?.travel?.units;
+          if (speed && units) {
+            const grid = canvas.scene?.grid;
+            if (grid) {
+              const pph = convertSpeedToPixelsPerHour(speed, units, grid.size, grid.distance, grid.units);
+              if (pph) {
+                speedInfoEl.textContent = `${actor.name}: ${speed} ${units} → ${pph.toFixed(1)} px/hr on this scene (${grid.distance} ${grid.units}/square)`;
+                speedInfoEl.style.color = "";
+              } else {
+                speedInfoEl.textContent = `Could not convert ${speed} ${units} to scene grid units (${grid.units}).`;
+                speedInfoEl.style.color = "var(--color-level-error)";
+              }
+            }
+          } else {
+            speedInfoEl.textContent = "Selected actor has no travel speed defined.";
+            speedInfoEl.style.color = "var(--color-level-warning)";
+          }
+        };
+        updateSpeedInfo();
+        speedCheckbox?.addEventListener("change", updateSpeedInfo);
 
         // Drag-drop actor from sidebar
         dropZone.addEventListener("dragover", (e) => {
@@ -2032,6 +2133,7 @@ const api = {
             if (!actor) return;
             actorSelect.value = actor.id;
             updateActorPreview(actor.id);
+            updateSpeedInfo();
           } catch {
             /* not valid drag data */
           }
@@ -2187,6 +2289,7 @@ const api = {
       id: result.id || foundry.utils.randomID(),
       name: result.name,
       actorId: result.actorId || undefined,
+      useActorSpeed: !!result.useActorSpeed,
       nameTemplate: result.nameTemplate || "[[name]] [[routeNum]]",
       schedule,
     };
@@ -2568,8 +2671,9 @@ Hooks.on("createDrawing", (drawing, options, userId) => {
   // Auto-open Tag Segment dialog after Draw Track
   if (_awaitingDrawTrack && game.user.isGM && userId === game.user.id) {
     _awaitingDrawTrack = false;
-    ui.controls.render({ control: MODULE_ID });
-    api.setupDialog(drawing);
+    api.setupDialog(drawing).then(() => {
+      ui.controls.render({ control: MODULE_ID });
+    });
   }
 });
 

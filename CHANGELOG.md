@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-04-06
+
+### Added
+
+- **Actor speed mode**: Routes can now calculate travel time automatically from the actor's travel speed and scene grid scale, instead of requiring manual "Hours from Prev" on every station. Enable via the "Use actor travel speed and scene grid size" checkbox in the Edit Route dialog.
+- **Distance column** in the Tag Segment dialog shows the world-distance between consecutive stations along the drawn path
+- Unit conversion supporting miles, kilometers, feet, and meters for both speed and grid units
+
+### Changed
+
+- Merged DESIGN.md content into CLAUDE.md; removed standalone DESIGN.md
+
+### Fixed
+
+- Controls now switch back to Rail Network group after saving the Tag Segment dialog opened via Draw Track
+
 ## [0.0.12] - 2026-04-06
 
 ### Added
@@ -193,7 +209,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional Sequencer and Calendaria module integration
 - GitHub Actions release workflow
 
-[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.12...HEAD
+[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.13...HEAD
+[0.0.13]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.12...v0.0.13
 [0.0.12]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.11...v0.0.12
 [0.0.11]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.10...v0.0.11
 [0.0.10]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.9...v0.0.10

@@ -5,6 +5,81 @@
 const SECONDS_PER_HOUR = 3600;
 const _SECONDS_PER_DAY = 86400;
 
+// ---------------------------------------------------------------------------
+// Unit conversion helpers
+// ---------------------------------------------------------------------------
+
+/** Miles per unit for supported distance strings (case-insensitive lookup). */
+const MILES_PER_UNIT = new Map();
+for (const k of ["mi", "mile", "miles"]) MILES_PER_UNIT.set(k, 1);
+for (const k of ["km", "kilometer", "kilometers", "kilometre", "kilometres"]) MILES_PER_UNIT.set(k, 1 / 1.60934);
+for (const k of ["ft", "foot", "feet"]) MILES_PER_UNIT.set(k, 1 / 5280);
+for (const k of ["m", "meter", "meters", "metre", "metres"]) MILES_PER_UNIT.set(k, 1 / 1609.34);
+
+/**
+ * Parse a speed-unit string into { distPerHour, distUnit } where distUnit is
+ * a key in MILES_PER_UNIT.  Returns null for unrecognised strings.
+ */
+function parseSpeedUnits(raw) {
+  const s = String(raw).trim().toLowerCase();
+  // mph-family → miles/hour
+  if (/^(mph|mi\/h|mi\/hr|miles?\/(hour|hr)|miles?\s+per\s+hour)$/.test(s)) return { perHour: 1, distUnit: "mi" };
+  // km/h-family → km/hour
+  if (/^(km\/h|kph|kmh|km\/hr|kmph|kilomet(?:er|re)s?\/(hour|hr)|kilomet(?:er|re)s?\s+per\s+hour)$/.test(s))
+    return { perHour: 1, distUnit: "km" };
+  // ft/s-family → feet/second
+  if (/^(ft\/s|ft\/sec|feet?\/(second|sec)|feet?\s+per\s+second)$/.test(s)) return { perHour: 3600, distUnit: "ft" };
+  // m/s-family → meters/second
+  if (/^(m\/s|m\/sec|met(?:er|re)s?\/(second|sec)|met(?:er|re)s?\s+per\s+second)$/.test(s))
+    return { perHour: 3600, distUnit: "m" };
+  return null;
+}
+
+/**
+ * Convert an actor's travel speed + scene grid config into pixels-per-hour.
+ *
+ * @param {number} speed         - Actor travel speed value (e.g. 30)
+ * @param {string} speedUnits    - Actor speed units (e.g. "mph", "km/h")
+ * @param {number} gridSize      - Scene grid size in pixels (e.g. 100)
+ * @param {number} gridDistance   - World distance per grid square (e.g. 46)
+ * @param {string} gridUnits     - Scene grid distance units (e.g. "mi", "km")
+ * @returns {number|null} Pixels per hour, or null if conversion is impossible
+ */
+export function convertSpeedToPixelsPerHour(speed, speedUnits, gridSize, gridDistance, gridUnits) {
+  if (!speed || speed <= 0 || !gridSize || gridSize <= 0 || !gridDistance || gridDistance <= 0) return null;
+
+  const parsed = parseSpeedUnits(speedUnits);
+  if (!parsed) return null;
+
+  // Convert speed to distance-per-hour in the speed's native distance unit
+  const nativeDistPerHour = speed * parsed.perHour;
+
+  // Convert native distance to miles, then miles to grid units
+  const speedMilesPerUnit = MILES_PER_UNIT.get(parsed.distUnit);
+  const gridKey = String(gridUnits).trim().toLowerCase();
+  const gridMilesPerUnit = MILES_PER_UNIT.get(gridKey);
+  if (speedMilesPerUnit == null || gridMilesPerUnit == null) return null;
+
+  // nativeDistPerHour in miles, then from miles to grid units
+  const distPerHourInGridUnits = (nativeDistPerHour * speedMilesPerUnit) / gridMilesPerUnit;
+
+  // grid units → pixels
+  return distPerHourInGridUnits * (gridSize / gridDistance);
+}
+
+/**
+ * Convert a pixel distance to world distance using the scene grid settings.
+ *
+ * @param {number} pixelDist   - Distance in pixels
+ * @param {number} gridSize    - Pixels per grid square
+ * @param {number} gridDistance - World distance per grid square
+ * @returns {number} Distance in world units
+ */
+export function pixelDistanceToWorldDistance(pixelDist, gridSize, gridDistance) {
+  if (!gridSize || gridSize <= 0) return 0;
+  return (pixelDist / gridSize) * gridDistance;
+}
+
 /**
  * Converts a Foundry Drawing's geometry + flags into an engine path array.
  * Pure function — no Foundry API calls, operates on plain data.
@@ -318,9 +393,11 @@ export function computeEffectiveDelay(event, worldTime) {
  * @param {Array} path - Ordered array of station and waypoint nodes.
  *   Station: { station: string, x, y, hoursFromPrev?, dwellMinutes? }
  *   Waypoint: { x, y }
+ * @param {number|null} [pixelsPerHour=null] - When provided, travel time is
+ *   derived from pixel distance instead of hoursFromPrev (actor-speed mode).
  * @returns {{ legs: Array, totalJourneySeconds: number }}
  */
-export function buildRouteSegments(path) {
+export function buildRouteSegments(path, pixelsPerHour = null) {
   const legs = [];
   let currentLeg = null;
 
@@ -332,9 +409,8 @@ export function buildRouteSegments(path) {
         // Close the current leg: this station is the endpoint
         currentLeg.endStation = node;
         currentLeg.points.push({ x: node.x, y: node.y });
-        currentLeg.travelSeconds = (node.hoursFromPrev ?? 0) * SECONDS_PER_HOUR;
 
-        // Compute cumulative pixel distances
+        // Compute cumulative pixel distances first (needed for both modes)
         let cumDist = 0;
         currentLeg.cumDistances = [0];
         for (let i = 1; i < currentLeg.points.length; i++) {
@@ -344,6 +420,13 @@ export function buildRouteSegments(path) {
           currentLeg.cumDistances.push(cumDist);
         }
         currentLeg.totalPixelDist = cumDist;
+
+        // Derive travel time: actor-speed mode vs manual hoursFromPrev
+        if (pixelsPerHour > 0) {
+          currentLeg.travelSeconds = (cumDist / pixelsPerHour) * SECONDS_PER_HOUR;
+        } else {
+          currentLeg.travelSeconds = (node.hoursFromPrev ?? 0) * SECONDS_PER_HOUR;
+        }
 
         legs.push(currentLeg);
       }
@@ -599,11 +682,12 @@ export function applyEvents(activeEvents, departureTime, elapsed, legs, worldTim
  * @param {Object} [opts] - Options
  * @param {Function} [opts.pathResolver] - (segments, worldTime) → path array. Required for Drawing-based segments.
  * @param {Function} [opts.calendarDecomposer] - (worldTime) → { minute, hour, dayOfMonth, month, dayOfWeek }
+ * @param {number|null} [opts.pixelsPerHour] - When set, derive travel time from pixel distance (actor-speed mode).
  * @returns {Array<{ routeId, departureTime, routeNum, name, x, y, atStation, delayed }>}
  */
 export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
   const normalized = normalizeSchedule(route);
-  const { pathResolver, calendarDecomposer } = opts;
+  const { pathResolver, calendarDecomposer, pixelsPerHour } = opts;
 
   const activeEvents = getActiveEvents(allEvents, normalized.id, worldTime);
 
@@ -635,7 +719,7 @@ export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
     }
 
     const directedPath = applyDirection(path, direction);
-    const result = buildRouteSegments(directedPath);
+    const result = buildRouteSegments(directedPath, pixelsPerHour ?? null);
     if (result.legs.length === 0) {
       pathCache.set(key, null);
       return null;

@@ -19,6 +19,8 @@ const {
   describeCronExpression,
   normalizeSchedule,
   computeDesiredTokens,
+  convertSpeedToPixelsPerHour,
+  pixelDistanceToWorldDistance,
 } = mod;
 
 // ============================================================================
@@ -1412,5 +1414,182 @@ describe("computeDesiredTokens", () => {
     assert.equal(results[0].texture, undefined);
     assert.equal(results[0].width, undefined);
     assert.equal(results[0].height, undefined);
+  });
+});
+
+// ============================================================================
+// convertSpeedToPixelsPerHour
+// ============================================================================
+
+describe("convertSpeedToPixelsPerHour", () => {
+  it("converts mph with mi grid (direct)", () => {
+    // 30 mph, 100px grid, 46 mi per square → 30 * (100/46) ≈ 65.217
+    const result = convertSpeedToPixelsPerHour(30, "mph", 100, 46, "mi");
+    assert.ok(Math.abs(result - 30 * (100 / 46)) < 0.01);
+  });
+
+  it("converts mph with km grid (cross-unit)", () => {
+    // 30 mph = 30 mi/h. 1 mi = 1.60934 km → 48.28 km/h
+    // 100px grid, 50 km per square → 48.28 * (100/50) ≈ 96.56
+    const result = convertSpeedToPixelsPerHour(30, "mph", 100, 50, "km");
+    const expectedKmPerHour = 30 * 1.60934;
+    const expectedPxPerHour = expectedKmPerHour * (100 / 50);
+    assert.ok(Math.abs(result - expectedPxPerHour) < 0.01);
+  });
+
+  it("converts km/h with km grid (direct)", () => {
+    const result = convertSpeedToPixelsPerHour(50, "km/h", 100, 25, "km");
+    assert.ok(Math.abs(result - 50 * (100 / 25)) < 0.01);
+  });
+
+  it("converts km/h with mi grid (cross-unit)", () => {
+    // 50 km/h. 1 km = 1/1.60934 mi → 31.069 mi/h
+    // 100px grid, 46 mi → 31.069 * (100/46) ≈ 67.54
+    const result = convertSpeedToPixelsPerHour(50, "km/h", 100, 46, "mi");
+    const expectedMiPerHour = 50 / 1.60934;
+    const expectedPxPerHour = expectedMiPerHour * (100 / 46);
+    assert.ok(Math.abs(result - expectedPxPerHour) < 0.01);
+  });
+
+  it("handles flexible unit strings (case-insensitive)", () => {
+    const base = convertSpeedToPixelsPerHour(30, "mph", 100, 46, "mi");
+    for (const units of ["MPH", "miles per hour", "mi/hr", "Miles/Hour", "mi/h"]) {
+      const result = convertSpeedToPixelsPerHour(30, units, 100, 46, "mi");
+      assert.ok(Math.abs(result - base) < 0.001, `failed for "${units}"`);
+    }
+  });
+
+  it("handles kph variants", () => {
+    const base = convertSpeedToPixelsPerHour(50, "km/h", 100, 25, "km");
+    for (const units of ["kph", "KPH", "kmh", "kmph", "Km/H", "kilometers per hour", "kilometres per hour"]) {
+      const result = convertSpeedToPixelsPerHour(50, units, 100, 25, "km");
+      assert.ok(Math.abs(result - base) < 0.001, `failed for "${units}"`);
+    }
+  });
+
+  it("handles ft/s speed units", () => {
+    // 10 ft/s = 36000 ft/h = 36000/5280 mi/h ≈ 6.818 mi/h
+    // 100px grid, 1 mi → 6.818 * 100 ≈ 681.8
+    const result = convertSpeedToPixelsPerHour(10, "ft/s", 100, 1, "mi");
+    const expected = ((10 * 3600) / 5280) * 100;
+    assert.ok(Math.abs(result - expected) < 0.1);
+  });
+
+  it("handles m/s speed units", () => {
+    // 10 m/s = 36000 m/h = 36 km/h, 100px grid, 10 km → 36 * (100/10) = 360
+    const result = convertSpeedToPixelsPerHour(10, "m/s", 100, 10, "km");
+    const expected = ((10 * 3600) / 1000) * (100 / 10);
+    assert.ok(Math.abs(result - expected) < 0.1);
+  });
+
+  it("handles grid units with various spellings", () => {
+    const base = convertSpeedToPixelsPerHour(30, "mph", 100, 46, "mi");
+    for (const gridUnit of ["mile", "miles"]) {
+      const result = convertSpeedToPixelsPerHour(30, "mph", 100, 46, gridUnit);
+      assert.ok(Math.abs(result - base) < 0.001, `failed for grid unit "${gridUnit}"`);
+    }
+  });
+
+  it("returns null for zero speed", () => {
+    assert.equal(convertSpeedToPixelsPerHour(0, "mph", 100, 46, "mi"), null);
+  });
+
+  it("returns null for zero grid distance", () => {
+    assert.equal(convertSpeedToPixelsPerHour(30, "mph", 100, 0, "mi"), null);
+  });
+
+  it("returns null for unrecognized speed units", () => {
+    assert.equal(convertSpeedToPixelsPerHour(30, "furlongs/fortnight", 100, 46, "mi"), null);
+  });
+
+  it("returns null for unrecognized grid units", () => {
+    assert.equal(convertSpeedToPixelsPerHour(30, "mph", 100, 46, "leagues"), null);
+  });
+
+  it("returns null for negative speed", () => {
+    assert.equal(convertSpeedToPixelsPerHour(-10, "mph", 100, 46, "mi"), null);
+  });
+});
+
+// ============================================================================
+// pixelDistanceToWorldDistance
+// ============================================================================
+
+describe("pixelDistanceToWorldDistance", () => {
+  it("converts pixel distance to world distance", () => {
+    // 200px, 100px grid, 46 mi per square → 92 mi
+    assert.equal(pixelDistanceToWorldDistance(200, 100, 46), 92);
+  });
+
+  it("returns 0 for zero grid size", () => {
+    assert.equal(pixelDistanceToWorldDistance(200, 0, 46), 0);
+  });
+
+  it("handles fractional results", () => {
+    // 50px, 100px grid, 46 mi → 23 mi
+    assert.equal(pixelDistanceToWorldDistance(50, 100, 46), 23);
+  });
+});
+
+// ============================================================================
+// buildRouteSegments — actor speed mode (pixelsPerHour)
+// ============================================================================
+
+describe("buildRouteSegments with pixelsPerHour", () => {
+  it("derives travel time from pixel distance when pixelsPerHour is provided", () => {
+    const path = [
+      { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+      { station: "B", x: 300, y: 400, dwellMinutes: 5 }, // 500px away, no hoursFromPrev
+    ];
+    // 500px at 100 px/hr → 5 hours = 18000 seconds
+    const result = buildRouteSegments(path, 100);
+    assert.equal(result.legs.length, 1);
+    assert.equal(result.legs[0].travelSeconds, 5 * SECONDS_PER_HOUR);
+  });
+
+  it("ignores hoursFromPrev when pixelsPerHour is provided", () => {
+    const path = [
+      { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+      { station: "B", x: 300, y: 400, hoursFromPrev: 99, dwellMinutes: 0 },
+    ];
+    // pixelsPerHour mode: hoursFromPrev=99 is ignored, uses 500px / 100 px/hr = 5h
+    const result = buildRouteSegments(path, 100);
+    assert.equal(result.legs[0].travelSeconds, 5 * SECONDS_PER_HOUR);
+  });
+
+  it("uses hoursFromPrev when pixelsPerHour is null (manual mode)", () => {
+    const path = [
+      { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+      { station: "B", x: 300, y: 400, hoursFromPrev: 2, dwellMinutes: 0 },
+    ];
+    const result = buildRouteSegments(path, null);
+    assert.equal(result.legs[0].travelSeconds, 2 * SECONDS_PER_HOUR);
+  });
+
+  it("accounts for waypoints in pixel distance calculation", () => {
+    const path = [
+      { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+      { x: 100, y: 0 }, // waypoint
+      { x: 100, y: 100 }, // waypoint
+      { station: "B", x: 100, y: 100, dwellMinutes: 0 }, // at same pos as last waypoint
+    ];
+    // Distance: 0→(100,0)=100, (100,0)→(100,100)=100, (100,100)→(100,100)=0 → total 200px
+    const result = buildRouteSegments(path, 50);
+    assert.equal(result.legs[0].travelSeconds, (200 / 50) * SECONDS_PER_HOUR);
+  });
+
+  it("handles multi-leg paths in actor speed mode", () => {
+    const path = [
+      { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+      { station: "B", x: 300, y: 400, dwellMinutes: 5 }, // 500px
+      { station: "C", x: 300, y: 700, dwellMinutes: 0 }, // 300px from B
+    ];
+    const result = buildRouteSegments(path, 100);
+    assert.equal(result.legs[0].travelSeconds, 5 * SECONDS_PER_HOUR); // 500/100
+    assert.equal(result.legs[1].travelSeconds, 3 * SECONDS_PER_HOUR); // 300/100
+    assert.equal(
+      result.totalJourneySeconds,
+      5 * SECONDS_PER_HOUR + 5 * 60 + 3 * SECONDS_PER_HOUR, // travel + dwell at B + travel
+    );
   });
 });
