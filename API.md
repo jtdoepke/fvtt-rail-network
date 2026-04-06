@@ -147,7 +147,7 @@ Clear events for a specific route, or all events if no route ID given.
 
 ```js
 await api.clearEvents("sharn-flamekeep"); // clear for one route
-await api.clearEvents();                  // clear all
+await api.clearEvents(); // clear all
 ```
 
 ### Convenience Methods
@@ -160,18 +160,18 @@ Delay a specific departure.
 
 ```js
 const eventId = await api.delayTrain("sharn-flamekeep", 432000, 2, {
-  recoveryRate: 0.5,  // recover 0.5 hours per hour elapsed
-  endTime: null,       // permanent until removed (default)
+  recoveryRate: 0.5, // recover 0.5 hours per hour elapsed
+  endTime: null, // permanent until removed (default)
   reason: "Mechanical failure",
 });
 ```
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `startTime` | `number` | `game.time.worldTime` | When the delay takes effect |
-| `endTime` | `number\|null` | `null` | When the delay expires (`null` = permanent) |
-| `recoveryRate` | `number` | `undefined` | Hours of delay recovered per hour elapsed |
-| `reason` | `string` | `undefined` | Flavor text |
+| Option         | Type           | Default               | Description                                 |
+| -------------- | -------------- | --------------------- | ------------------------------------------- |
+| `startTime`    | `number`       | `game.time.worldTime` | When the delay takes effect                 |
+| `endTime`      | `number\|null` | `null`                | When the delay expires (`null` = permanent) |
+| `recoveryRate` | `number`       | `undefined`           | Hours of delay recovered per hour elapsed   |
+| `reason`       | `string`       | `undefined`           | Flavor text                                 |
 
 #### `destroyTrain(routeId, departureTime, opts?)`
 
@@ -183,11 +183,11 @@ await api.destroyTrain("sharn-flamekeep", 432000, {
 });
 ```
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `startTime` | `number` | `game.time.worldTime` | When the cancellation takes effect |
-| `endTime` | `number\|null` | `null` | When the cancellation expires |
-| `reason` | `string` | `undefined` | Flavor text |
+| Option      | Type           | Default               | Description                        |
+| ----------- | -------------- | --------------------- | ---------------------------------- |
+| `startTime` | `number`       | `game.time.worldTime` | When the cancellation takes effect |
+| `endTime`   | `number\|null` | `null`                | When the cancellation expires      |
+| `reason`    | `string`       | `undefined`           | Flavor text                        |
 
 #### `blockTrack(routeId, stationName, opts?)`
 
@@ -200,11 +200,11 @@ await api.blockTrack("sharn-flamekeep", "Vathirond", {
 });
 ```
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `startTime` | `number` | `game.time.worldTime` | When the block takes effect |
-| `endTime` | `number\|null` | `null` | When the block is lifted |
-| `reason` | `string` | `undefined` | Flavor text |
+| Option      | Type           | Default               | Description                 |
+| ----------- | -------------- | --------------------- | --------------------------- |
+| `startTime` | `number`       | `game.time.worldTime` | When the block takes effect |
+| `endTime`   | `number\|null` | `null`                | When the block is lifted    |
+| `reason`    | `string`       | `undefined`           | Flavor text                 |
 
 ### Calendaria Integration
 
@@ -215,7 +215,7 @@ Create a Calendaria note that triggers a rail event. Requires the Calendaria mod
 ```js
 await api.scheduleEvent(
   { type: "blockTrack", target: { routeId: "sharn-flamekeep", stationName: "Vathirond" } },
-  { year: 998, month: 3, day: 15 }
+  { year: 998, month: 3, day: 15 },
 );
 ```
 
@@ -249,14 +249,14 @@ Create hotbar macros in the Macro Directory for common operations.
 
 Events modify train behavior at runtime. All events have:
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `id` | `string` | auto | Auto-generated unique ID |
-| `type` | `string` | yes | One of the types below |
-| `target` | `object` | yes | Targeting fields (varies by type) |
-| `startTime` | `number\|null` | no | When event activates (`null` = epoch) |
-| `endTime` | `number\|null` | no | When event expires (`null` = permanent) |
-| `reason` | `string` | no | Flavor text |
+| Field       | Type           | Required | Description                             |
+| ----------- | -------------- | -------- | --------------------------------------- |
+| `id`        | `string`       | auto     | Auto-generated unique ID                |
+| `type`      | `string`       | yes      | One of the types below                  |
+| `target`    | `object`       | yes      | Targeting fields (varies by type)       |
+| `startTime` | `number\|null` | no       | When event activates (`null` = epoch)   |
+| `endTime`   | `number\|null` | no       | When event expires (`null` = permanent) |
+| `reason`    | `string`       | no       | Flavor text                             |
 
 An event is **active** when `(startTime ?? 0) <= worldTime` and `(endTime == null || worldTime < endTime)`.
 
@@ -264,34 +264,35 @@ An event is **active** when `(startTime ?? 0) <= worldTime` and `(endTime == nul
 
 Suppress all departures on a route.
 
-| Target Field | Type | Description |
-|-------------|------|-------------|
-| `routeId` | `string` | Route to close |
+| Target Field | Type     | Description    |
+| ------------ | -------- | -------------- |
+| `routeId`    | `string` | Route to close |
 
 ### `blockTrack`
 
 Hold all trains at a named station (infinite dwell).
 
-| Target Field | Type | Description |
-|-------------|------|-------------|
-| `routeId` | `string` | Route affected |
+| Target Field  | Type     | Description               |
+| ------------- | -------- | ------------------------- |
+| `routeId`     | `string` | Route affected            |
 | `stationName` | `string` | Station where trains stop |
 
 ### `delay`
 
 Delay a specific departure.
 
-| Target Field | Type | Description |
-|-------------|------|-------------|
-| `routeId` | `string` | Route affected |
+| Target Field    | Type     | Description                 |
+| --------------- | -------- | --------------------------- |
+| `routeId`       | `string` | Route affected              |
 | `departureTime` | `number` | World time of the departure |
 
-| Extra Field | Type | Description |
-|------------|------|-------------|
-| `delayHours` | `number` | Hours of delay |
+| Extra Field    | Type     | Description                                 |
+| -------------- | -------- | ------------------------------------------- |
+| `delayHours`   | `number` | Hours of delay                              |
 | `recoveryRate` | `number` | Hours recovered per hour elapsed (optional) |
 
 **Recovery modes:**
+
 - No `recoveryRate`, no `endTime`: permanent delay.
 - `endTime` set: delay decreases linearly to 0 between `startTime` and `endTime`.
 - `recoveryRate` set (takes precedence): delay decreases at a fixed rate per hour elapsed.
@@ -300,28 +301,28 @@ Delay a specific departure.
 
 Remove a specific departure's token.
 
-| Target Field | Type | Description |
-|-------------|------|-------------|
-| `routeId` | `string` | Route affected |
+| Target Field    | Type     | Description                 |
+| --------------- | -------- | --------------------------- |
+| `routeId`       | `string` | Route affected              |
 | `departureTime` | `number` | World time of the departure |
 
 ### `halt`
 
 Stop a specific departure at a named station.
 
-| Target Field | Type | Description |
-|-------------|------|-------------|
-| `routeId` | `string` | Route affected |
-| `departureTime` | `number` | World time of the departure |
-| `stationName` | `string` | Station where the train halts |
+| Target Field    | Type     | Description                   |
+| --------------- | -------- | ----------------------------- |
+| `routeId`       | `string` | Route affected                |
+| `departureTime` | `number` | World time of the departure   |
+| `stationName`   | `string` | Station where the train halts |
 
 ### `extraDeparture`
 
 Create an unscheduled departure from a mid-route station.
 
-| Target Field | Type | Description |
-|-------------|------|-------------|
-| `routeId` | `string` | Route to depart on |
+| Target Field  | Type     | Description                          |
+| ------------- | -------- | ------------------------------------ |
+| `routeId`     | `string` | Route to depart on                   |
 | `stationName` | `string` | Station where the extra train starts |
 
 ## Hooks

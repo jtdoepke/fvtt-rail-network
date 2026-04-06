@@ -3,7 +3,7 @@
 // ============================================================================
 
 const SECONDS_PER_HOUR = 3600;
-const SECONDS_PER_DAY = 86400;
+const _SECONDS_PER_DAY = 86400;
 
 /**
  * Converts a Foundry Drawing's geometry + flags into an engine path array.
@@ -101,7 +101,7 @@ export function orientAndSlicePath(path, entryIndex, exitIndex) {
   let subPath;
   if (entryIndex < exitIndex) {
     // Forward slice
-    subPath = path.slice(entryIndex, exitIndex + 1).map(n => ({ ...n }));
+    subPath = path.slice(entryIndex, exitIndex + 1).map((n) => ({ ...n }));
   } else {
     // Reverse slice: extract then reverse with hoursFromPrev shift
     const slice = path.slice(exitIndex, entryIndex + 1);
@@ -149,7 +149,7 @@ export function resolveRoutePath(segments, worldTime) {
   }
 
   if (activePaths.length === 0) return [];
-  if (activePaths.length === 1) return activePaths[0].map(n => ({ ...n }));
+  if (activePaths.length === 1) return activePaths[0].map((n) => ({ ...n }));
 
   // Orient the first segment by looking ahead to the second segment.
   // If the junction is at the very start (index 0) of the first segment,
@@ -159,11 +159,9 @@ export function resolveRoutePath(segments, worldTime) {
   const firstPair = findClosestEndpointPair(activePaths[0], activePaths[1]);
   let result;
   if (firstPair.indexA === 0) {
-    result = orientAndSlicePath(
-      activePaths[0], activePaths[0].length - 1, 0
-    );
+    result = orientAndSlicePath(activePaths[0], activePaths[0].length - 1, 0);
   } else {
-    result = activePaths[0].map(n => ({ ...n }));
+    result = activePaths[0].map((n) => ({ ...n }));
   }
   let lastSegStartIdx = 0;
 
@@ -194,10 +192,7 @@ export function resolveRoutePath(segments, worldTime) {
     const junctionNode = result[result.length - 1];
     const bFirstNode = orientedB[0];
     if ("station" in junctionNode && "station" in bFirstNode) {
-      const maxDwell = Math.max(
-        junctionNode.dwellMinutes ?? 0,
-        bFirstNode.dwellMinutes ?? 0
-      );
+      const maxDwell = Math.max(junctionNode.dwellMinutes ?? 0, bFirstNode.dwellMinutes ?? 0);
       junctionNode.dwellMinutes = maxDwell;
     }
 
@@ -230,7 +225,7 @@ export function resolveRoutePath(segments, worldTime) {
  * @returns {Array} Active events for this route
  */
 export function getActiveEvents(events, routeId, worldTime) {
-  return events.filter(evt => {
+  return events.filter((evt) => {
     if (evt.target.routeId !== routeId) return false;
     const start = evt.startTime ?? 0;
     if (worldTime < start) return false;
@@ -613,7 +608,7 @@ export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
   const activeEvents = getActiveEvents(allEvents, normalized.id, worldTime);
 
   // closeLine → no departures
-  if (activeEvents.some(e => e.type === "closeLine")) return [];
+  if (activeEvents.some((e) => e.type === "closeLine")) return [];
 
   // We need a max journey time for the lookback window.
   // Compute it from the first trip's path as an estimate, then refine per-departure.
@@ -665,7 +660,7 @@ export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
   const firstTrip = normalized.schedule[0];
   const defaultResolved = firstTrip ? resolveTrip(firstTrip.segments, firstTrip.direction) : null;
   const extras = defaultResolved
-    ? findExtraDepartures(activeEvents, worldTime, defaultResolved.legs).map(dep => ({
+    ? findExtraDepartures(activeEvents, worldTime, defaultResolved.legs).map((dep) => ({
         ...dep,
         routeNum: "X",
         direction: firstTrip.direction,
@@ -689,9 +684,7 @@ export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
     if (!pos) continue;
 
     const routeNum = dep.startStationName ? "X" : (dep.routeNum ?? "?");
-    const isDelayed = activeEvents.some(e =>
-      e.type === "delay" && e.target.departureTime === dep.departureTime
-    );
+    const isDelayed = activeEvents.some((e) => e.type === "delay" && e.target.departureTime === dep.departureTime);
 
     results.push({
       routeId: normalized.id,
@@ -721,7 +714,7 @@ export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
 export function getPathCompassLabels(path) {
   if (!path || path.length < 2) return null;
 
-  const stations = path.filter(n => "station" in n);
+  const stations = path.filter((n) => "station" in n);
   if (stations.length < 2) return null;
 
   const first = stations[0];
@@ -771,7 +764,7 @@ export function reversePath(path) {
   //   origStation[n-1-j] to origStation[n-2-j] = origStation[n-1-j].hoursFromPrev.
   // So reversed station j+1 gets hoursFromPrev = origStations[n-1-j].hoursFromPrev.
   // Equivalently: reversedHours[j] for j>=1 = origStations[n-j].hoursFromPrev.
-  const origStations = path.filter(n => "station" in n);
+  const origStations = path.filter((n) => "station" in n);
   const n = origStations.length;
   const reversedHours = [0];
   for (let j = 1; j < n; j++) {
@@ -779,7 +772,7 @@ export function reversePath(path) {
   }
 
   let stationIdx = 0;
-  return reversed.map(node => {
+  return reversed.map((node) => {
     if ("station" in node) {
       const newNode = { ...node, hoursFromPrev: reversedHours[stationIdx] };
       stationIdx++;
@@ -846,7 +839,7 @@ export function parseCronField(field, opts = {}) {
       return {
         match: (v) => {
           for (const val of values) {
-            if (((v - val) % implicitStep + implicitStep) % implicitStep === 0 && v >= val) return true;
+            if ((((v - val) % implicitStep) + implicitStep) % implicitStep === 0 && v >= val) return true;
           }
           return false;
         },
@@ -874,7 +867,7 @@ export function parseCronField(field, opts = {}) {
     const start = Number(startStr);
     const step = Number(stepStr);
     return {
-      match: (v) => ((v - start) % step + step) % step === 0 && v >= start,
+      match: (v) => (((v - start) % step) + step) % step === 0 && v >= start,
       step,
       start,
     };
@@ -884,7 +877,7 @@ export function parseCronField(field, opts = {}) {
   const num = Number(field);
   if (implicitStep) {
     return {
-      match: (v) => ((v - num) % implicitStep + implicitStep) % implicitStep === 0 && v >= num,
+      match: (v) => (((v - num) % implicitStep) + implicitStep) % implicitStep === 0 && v >= num,
       step: implicitStep,
       start: num,
     };
@@ -970,7 +963,7 @@ export function describeCronExpression(expr, hasCalendaria = false, calendarInfo
     const prefix = !hasCalendaria ? "Daily at" : "At";
     timeStr = `${prefix} ${pad(hourDesc.value)}:${pad(minVal)}`;
   } else if (hourDesc?.values) {
-    timeStr = `At ${hourDesc.values.map(h => `${pad(h)}:${pad(minVal)}`).join(" and ")}`;
+    timeStr = `At ${hourDesc.values.map((h) => `${pad(h)}:${pad(minVal)}`).join(" and ")}`;
   } else if (hourDesc?.every) {
     const days = hourDesc.every / 24;
     if (Number.isInteger(days) && days > 1) {
@@ -1002,7 +995,7 @@ export function describeCronExpression(expr, hasCalendaria = false, calendarInfo
   if (wdayDesc != null) {
     const names = calendarInfo?.weekdayNames;
     if (wdayDesc.values) {
-      const labels = names ? wdayDesc.values.map(v => names[v] ?? v) : wdayDesc.values;
+      const labels = names ? wdayDesc.values.map((v) => names[v] ?? v) : wdayDesc.values;
       constraints.push(`on ${labels.join(", ")}`);
     } else if (wdayDesc.value != null) {
       const label = names ? (names[wdayDesc.value] ?? wdayDesc.value) : wdayDesc.value;
@@ -1021,7 +1014,7 @@ export function describeCronExpression(expr, hasCalendaria = false, calendarInfo
   if (monthDesc != null) {
     const names = calendarInfo?.monthNames;
     if (monthDesc.values) {
-      const labels = names ? monthDesc.values.map(v => names[v] ?? v) : monthDesc.values;
+      const labels = names ? monthDesc.values.map((v) => names[v] ?? v) : monthDesc.values;
       constraints.push(`in ${labels.join(", ")}`);
     } else if (monthDesc.value != null) {
       const label = names ? (names[monthDesc.value] ?? monthDesc.value) : monthDesc.value;
@@ -1067,7 +1060,7 @@ export function normalizeSchedule(route) {
       cron,
       routeNumbers: routeNums[i] != null ? [routeNums[i]] : [],
       direction: "outbound",
-      segments: segments.map(s => ({ ...s })),
+      segments: segments.map((s) => ({ ...s })),
     };
   });
 
@@ -1076,7 +1069,7 @@ export function normalizeSchedule(route) {
       cron: "0 6",
       routeNumbers: [],
       direction: "outbound",
-      segments: segments.map(s => ({ ...s })),
+      segments: segments.map((s) => ({ ...s })),
     });
   }
 

@@ -19,7 +19,6 @@ const {
   describeCronExpression,
   normalizeSchedule,
   computeDesiredTokens,
-  applyEvents,
 } = mod;
 
 // ============================================================================
@@ -60,8 +59,8 @@ describe("buildRouteSegments", () => {
   it("builds correct legs from a path with interleaved waypoints", () => {
     const path = [
       { station: "A", x: 0, y: 0, dwellMinutes: 0 },
-      { x: 100, y: 0 },   // waypoint
-      { x: 200, y: 100 },  // waypoint
+      { x: 100, y: 0 }, // waypoint
+      { x: 200, y: 100 }, // waypoint
       { station: "B", x: 300, y: 100, hoursFromPrev: 1, dwellMinutes: 5 },
     ];
 
@@ -74,9 +73,9 @@ describe("buildRouteSegments", () => {
   it("computes cumulative pixel distances correctly for waypoints", () => {
     const path = [
       { station: "A", x: 0, y: 0, dwellMinutes: 0 },
-      { x: 100, y: 0 },   // 100px from A
+      { x: 100, y: 0 }, // 100px from A
       { x: 100, y: 100 }, // 100px from prev waypoint
-      { station: "B", x: 100, y: 200, hoursFromPrev: 1, dwellMinutes: 0 },  // 100px from prev
+      { station: "B", x: 100, y: 200, hoursFromPrev: 1, dwellMinutes: 0 }, // 100px from prev
     ];
 
     const result = buildRouteSegments(path);
@@ -92,9 +91,9 @@ describe("buildRouteSegments", () => {
 
   it("computes totalJourneySeconds correctly (sum of travel + dwell)", () => {
     const path = [
-      { station: "A", x: 0, y: 0, dwellMinutes: 5 },      // 5 min dwell
+      { station: "A", x: 0, y: 0, dwellMinutes: 5 }, // 5 min dwell
       { station: "B", x: 100, y: 0, hoursFromPrev: 2, dwellMinutes: 10 }, // 2h travel, 10 min dwell
-      { station: "C", x: 200, y: 0, hoursFromPrev: 3, dwellMinutes: 0 },  // 3h travel, 0 dwell
+      { station: "C", x: 200, y: 0, hoursFromPrev: 3, dwellMinutes: 0 }, // 3h travel, 0 dwell
     ];
 
     const result = buildRouteSegments(path);
@@ -156,8 +155,8 @@ describe("getTrainPosition", () => {
   it("returns interpolated position following waypoints", () => {
     const { legs, totalJourneySeconds } = buildRouteSegments([
       { station: "A", x: 0, y: 0, dwellMinutes: 0 },
-      { x: 100, y: 0 },    // waypoint
-      { x: 100, y: 100 },  // waypoint
+      { x: 100, y: 0 }, // waypoint
+      { x: 100, y: 100 }, // waypoint
       { station: "B", x: 100, y: 200, hoursFromPrev: 1, dwellMinutes: 0 },
     ]);
     // Total pixel dist = 100 + 100 + 100 = 300. Travel = 3600s.
@@ -228,7 +227,7 @@ describe("findAllActiveDepartures", () => {
 
     // Should find day 5 at 22:00 (10h elapsed), day 4 at 22:00 (34h elapsed), day 3 at 22:00 (58h elapsed)
     assert.equal(departures.length, 3);
-    assert.equal(departures[0].elapsed, 10 * SECONDS_PER_HOUR);  // most recent first
+    assert.equal(departures[0].elapsed, 10 * SECONDS_PER_HOUR); // most recent first
   });
 
   it("multi-day interval: skips non-run days", () => {
@@ -276,7 +275,7 @@ describe("findAllActiveDepartures", () => {
 
     // 20:00 today: 2h elapsed (active). 14:00 today: 8h elapsed (active). 8:00 today: 14h (too old).
     assert.equal(departures.length, 2);
-    assert.equal(departures[0].elapsed, 2 * SECONDS_PER_HOUR);  // most recent first
+    assert.equal(departures[0].elapsed, 2 * SECONDS_PER_HOUR); // most recent first
     assert.equal(departures[1].elapsed, 8 * SECONDS_PER_HOUR);
   });
 
@@ -420,8 +419,14 @@ describe("resolveRoutePath", () => {
 
 describe("findClosestEndpointPair", () => {
   it("finds matching endpoints", () => {
-    const a = [{ x: 0, y: 0 }, { x: 100, y: 0 }];
-    const b = [{ x: 100, y: 0 }, { x: 200, y: 0 }];
+    const a = [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+    ];
+    const b = [
+      { x: 100, y: 0 },
+      { x: 200, y: 0 },
+    ];
     const pair = findClosestEndpointPair(a, b);
     assert.equal(pair.indexA, 1);
     assert.equal(pair.indexB, 0);
@@ -429,8 +434,14 @@ describe("findClosestEndpointPair", () => {
   });
 
   it("finds closest when no exact match", () => {
-    const a = [{ x: 0, y: 0 }, { x: 100, y: 0 }];
-    const b = [{ x: 102, y: 1 }, { x: 200, y: 0 }];
+    const a = [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+    ];
+    const b = [
+      { x: 102, y: 1 },
+      { x: 200, y: 0 },
+    ];
     const pair = findClosestEndpointPair(a, b);
     assert.equal(pair.indexA, 1);
     assert.equal(pair.indexB, 0);
@@ -438,8 +449,15 @@ describe("findClosestEndpointPair", () => {
   });
 
   it("finds T-junction (B endpoint matches A mid-point)", () => {
-    const a = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 200, y: 0 }];
-    const b = [{ x: 100, y: 0 }, { x: 100, y: 100 }];
+    const a = [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 200, y: 0 },
+    ];
+    const b = [
+      { x: 100, y: 0 },
+      { x: 100, y: 100 },
+    ];
     const pair = findClosestEndpointPair(a, b);
     assert.equal(pair.indexA, 1);
     assert.equal(pair.indexB, 0);
@@ -448,8 +466,16 @@ describe("findClosestEndpointPair", () => {
 
   it("parallel tracks don't false-match mid-segment", () => {
     // Two tracks run parallel, close together at midpoints, converging at endpoints
-    const a = [{ x: 0, y: 0 }, { x: 50, y: 1 }, { x: 100, y: 0 }];
-    const b = [{ x: 100, y: 0 }, { x: 50, y: -1 }, { x: 200, y: 0 }];
+    const a = [
+      { x: 0, y: 0 },
+      { x: 50, y: 1 },
+      { x: 100, y: 0 },
+    ];
+    const b = [
+      { x: 100, y: 0 },
+      { x: 50, y: -1 },
+      { x: 200, y: 0 },
+    ];
     // Mid-points (50,1) and (50,-1) are distance 2, but one must be an endpoint.
     // Closest valid pair: A's last (100,0) and B's first (100,0), distance 0.
     const pair = findClosestEndpointPair(a, b);
@@ -509,9 +535,7 @@ describe("orientAndSlicePath", () => {
   });
 
   it("single point returns single node", () => {
-    const path = [
-      { station: "A", x: 0, y: 0, hoursFromPrev: 5, dwellMinutes: 10 },
-    ];
+    const path = [{ station: "A", x: 0, y: 0, hoursFromPrev: 5, dwellMinutes: 10 }];
     const result = orientAndSlicePath(path, 0, 0);
     assert.equal(result.length, 1);
     assert.equal(result[0].station, "A");
@@ -703,41 +727,41 @@ describe("resolveRoutePath closest-point chaining", () => {
 
   it("real config trip 1: wroat-starilaskur then sharn-fairhaven → Starilaskur to Sharn", () => {
     const result = resolveRoutePath([wroatStarilaskur, sharnFairhaven], 1000);
-    const stations = result.filter(n => "station" in n);
+    const stations = result.filter((n) => "station" in n);
     assert.deepEqual(
-      stations.map(s => s.station),
-      ["Starilaskur", "Nowhere", "Lowstead", "Earlsfield", "Mainford", "Wroat", "Faircourt", "First Tower", "Sharn"]
+      stations.map((s) => s.station),
+      ["Starilaskur", "Nowhere", "Lowstead", "Earlsfield", "Mainford", "Wroat", "Faircourt", "First Tower", "Sharn"],
     );
     // First station (departure) should have dwellMinutes=0
     assert.equal(stations[0].dwellMinutes, 0);
     assert.equal(stations[0].hoursFromPrev, 0);
     // Wroat junction should use max dwell: max(60, 60) = 60
-    const wroat = stations.find(s => s.station === "Wroat");
+    const wroat = stations.find((s) => s.station === "Wroat");
     assert.equal(wroat.dwellMinutes, 60);
     // First Tower dwell preserved
-    assert.equal(stations.find(s => s.station === "First Tower").dwellMinutes, 30);
+    assert.equal(stations.find((s) => s.station === "First Tower").dwellMinutes, 30);
   });
 
   it("real config trip 2: sharn-fairhaven then wroat-starilaskur → Sharn to Starilaskur", () => {
     const result = resolveRoutePath([sharnFairhaven, wroatStarilaskur], 1000);
-    const stations = result.filter(n => "station" in n);
+    const stations = result.filter((n) => "station" in n);
     assert.deepEqual(
-      stations.map(s => s.station),
-      ["Sharn", "First Tower", "Faircourt", "Wroat", "Mainford", "Earlsfield", "Lowstead", "Nowhere", "Starilaskur"]
+      stations.map((s) => s.station),
+      ["Sharn", "First Tower", "Faircourt", "Wroat", "Mainford", "Earlsfield", "Lowstead", "Nowhere", "Starilaskur"],
     );
     // First station (departure) should have dwellMinutes=0
     assert.equal(stations[0].dwellMinutes, 0);
     assert.equal(stations[0].hoursFromPrev, 0);
     // Wroat junction should use max dwell
-    const wroat = stations.find(s => s.station === "Wroat");
+    const wroat = stations.find((s) => s.station === "Wroat");
     assert.equal(wroat.dwellMinutes, 60);
   });
 
   it("real config: both segment orderings produce same path (just reversed)", () => {
     const trip1 = resolveRoutePath([wroatStarilaskur, sharnFairhaven], 1000);
     const trip2 = resolveRoutePath([sharnFairhaven, wroatStarilaskur], 1000);
-    const stations1 = trip1.filter(n => "station" in n).map(s => s.station);
-    const stations2 = trip2.filter(n => "station" in n).map(s => s.station);
+    const stations1 = trip1.filter((n) => "station" in n).map((s) => s.station);
+    const stations2 = trip2.filter((n) => "station" in n).map((s) => s.station);
     assert.deepEqual(stations1, stations2.slice().reverse());
   });
 
@@ -774,26 +798,20 @@ describe("resolveRoutePath closest-point chaining", () => {
 
 describe("getActiveEvents", () => {
   it("closeLine event suppresses route when active", () => {
-    const events = [
-      { id: "e1", type: "closeLine", target: { routeId: "r1" }, startTime: 100, endTime: 500 },
-    ];
+    const events = [{ id: "e1", type: "closeLine", target: { routeId: "r1" }, startTime: 100, endTime: 500 }];
     const active = getActiveEvents(events, "r1", 200);
     assert.equal(active.length, 1);
     assert.equal(active[0].type, "closeLine");
   });
 
   it("closeLine with endTime: not active after endTime", () => {
-    const events = [
-      { id: "e1", type: "closeLine", target: { routeId: "r1" }, startTime: 100, endTime: 500 },
-    ];
+    const events = [{ id: "e1", type: "closeLine", target: { routeId: "r1" }, startTime: 100, endTime: 500 }];
     const active = getActiveEvents(events, "r1", 600);
     assert.equal(active.length, 0);
   });
 
   it("closeLine with no startTime: models not-yet-open line", () => {
-    const events = [
-      { id: "e1", type: "closeLine", target: { routeId: "r1" }, startTime: null, endTime: 1000 },
-    ];
+    const events = [{ id: "e1", type: "closeLine", target: { routeId: "r1" }, startTime: null, endTime: 1000 }];
     // Before endTime: active (line closed)
     assert.equal(getActiveEvents(events, "r1", 500).length, 1);
     // After endTime: inactive (line open)
@@ -820,7 +838,14 @@ describe("getActiveEvents", () => {
 
   it("delay event targets specific departure", () => {
     const events = [
-      { id: "e1", type: "delay", target: { routeId: "r1", departureTime: 5000 }, startTime: 5500, endTime: null, delayHours: 3 },
+      {
+        id: "e1",
+        type: "delay",
+        target: { routeId: "r1", departureTime: 5000 },
+        startTime: 5500,
+        endTime: null,
+        delayHours: 3,
+      },
     ];
     const active = getActiveEvents(events, "r1", 6000);
     assert.equal(active.length, 1);
@@ -854,7 +879,14 @@ describe("getActiveEvents", () => {
   it("multiple overlapping events on same route", () => {
     const events = [
       { id: "e1", type: "blockTrack", target: { routeId: "r1", stationName: "X" }, startTime: 100, endTime: 500 },
-      { id: "e2", type: "delay", target: { routeId: "r1", departureTime: 200 }, startTime: 150, endTime: null, delayHours: 2 },
+      {
+        id: "e2",
+        type: "delay",
+        target: { routeId: "r1", departureTime: 200 },
+        startTime: 150,
+        endTime: null,
+        delayHours: 2,
+      },
       { id: "e3", type: "closeLine", target: { routeId: "r2" }, startTime: 0, endTime: null },
     ];
     const active = getActiveEvents(events, "r1", 300);
@@ -927,12 +959,14 @@ describe("findExtraDepartures", () => {
   }
 
   it("creates a synthetic departure from named station", () => {
-    const { legs, totalJourneySeconds } = makeLegs();
+    const { legs } = makeLegs();
     const events = [
       {
-        id: "ex1", type: "extraDeparture",
+        id: "ex1",
+        type: "extraDeparture",
         target: { routeId: "r1", stationName: "B" },
-        startTime: 5000, endTime: null,
+        startTime: 5000,
+        endTime: null,
       },
     ];
 
@@ -948,9 +982,11 @@ describe("findExtraDepartures", () => {
     const { legs } = makeLegs();
     const events = [
       {
-        id: "ex1", type: "extraDeparture",
+        id: "ex1",
+        type: "extraDeparture",
         target: { routeId: "r1", stationName: "B" },
-        startTime: 5000, endTime: null,
+        startTime: 5000,
+        endTime: null,
       },
     ];
 
@@ -959,15 +995,17 @@ describe("findExtraDepartures", () => {
   });
 
   it("extra departure + destroy: replacement train scenario", () => {
-    const { legs, totalJourneySeconds } = makeLegs();
+    const { legs } = makeLegs();
     // The extra departure starts at B. Journey from B→C = 3h + 10min dwell at B.
     // So max journey from B = 10*60 + 3*3600 = 11400s.
     // At worldTime 5000 + 12000 = 17000, the extra train would have completed.
     const events = [
       {
-        id: "ex1", type: "extraDeparture",
+        id: "ex1",
+        type: "extraDeparture",
         target: { routeId: "r1", stationName: "B" },
-        startTime: 5000, endTime: null,
+        startTime: 5000,
+        endTime: null,
       },
     ];
 
@@ -1008,7 +1046,7 @@ describe("reversePath", () => {
 
     // Dwell times stay on their stations
     assert.equal(rev[0].dwellMinutes, 10); // C's dwell
-    assert.equal(rev[1].dwellMinutes, 5);  // B's dwell
+    assert.equal(rev[1].dwellMinutes, 5); // B's dwell
     assert.equal(rev[2].dwellMinutes, 10); // A's dwell
   });
 
@@ -1060,7 +1098,7 @@ describe("applyDirection", () => {
   it("roundtrip concatenates outbound and reversed, deduping turnaround", () => {
     const result = applyDirection(path, "roundtrip");
     // A, B, C (outbound) + B, A (return, first station C dropped)
-    const stations = result.filter(n => "station" in n);
+    const stations = result.filter((n) => "station" in n);
     assert.equal(stations.length, 5);
     assert.equal(stations[0].station, "A");
     assert.equal(stations[1].station, "B");
@@ -1111,8 +1149,8 @@ describe("parseCronField", () => {
   it("bare number with implicitStep repeats", () => {
     const f = parseCronField("6", { implicitStep: 24 });
     assert.equal(f.match(6), true);
-    assert.equal(f.match(30), true);  // 6 + 24
-    assert.equal(f.match(54), true);  // 6 + 48
+    assert.equal(f.match(30), true); // 6 + 24
+    assert.equal(f.match(54), true); // 6 + 48
     assert.equal(f.match(7), false);
     assert.equal(f.match(5), false);
   });
@@ -1157,10 +1195,10 @@ describe("parseCronField", () => {
   it("step N/S", () => {
     const f = parseCronField("6/48");
     assert.equal(f.match(6), true);
-    assert.equal(f.match(54), true);   // 6 + 48
-    assert.equal(f.match(102), true);  // 6 + 96
+    assert.equal(f.match(54), true); // 6 + 48
+    assert.equal(f.match(102), true); // 6 + 96
     assert.equal(f.match(0), false);
-    assert.equal(f.match(48), false);  // 48 != 6 mod 48
+    assert.equal(f.match(48), false); // 48 != 6 mod 48
   });
 });
 
@@ -1307,18 +1345,22 @@ describe("computeDesiredTokens", () => {
   // Simple two-station route for testing
   const makeRoute = () => ({
     id: "test-route",
-    schedule: [{
-      cron: "0 6",
-      routeNumbers: ["101"],
-      direction: "outbound",
-      segments: [{
-        segmentId: "seg1",
-        path: [
-          { station: "A", x: 0, y: 0, hoursFromPrev: 0, dwellMinutes: 0 },
-          { station: "B", x: 100, y: 0, hoursFromPrev: 2, dwellMinutes: 0 },
+    schedule: [
+      {
+        cron: "0 6",
+        routeNumbers: ["101"],
+        direction: "outbound",
+        segments: [
+          {
+            segmentId: "seg1",
+            path: [
+              { station: "A", x: 0, y: 0, hoursFromPrev: 0, dwellMinutes: 0 },
+              { station: "B", x: 100, y: 0, hoursFromPrev: 2, dwellMinutes: 0 },
+            ],
+          },
         ],
-      }],
-    }],
+      },
+    ],
   });
 
   // worldTime at 7:00 on day 0 — 1 hour into the 2-hour journey departing at 6:00
@@ -1333,28 +1375,32 @@ describe("computeDesiredTokens", () => {
 
   it("returns delayed: true when delay event targets the departure", () => {
     const depTime = 6 * SECONDS_PER_HOUR; // 06:00
-    const events = [{
-      id: "evt1",
-      type: "delay",
-      target: { routeId: "test-route", departureTime: depTime },
-      startTime: 0,
-      endTime: null,
-      delayHours: 0.5,
-    }];
+    const events = [
+      {
+        id: "evt1",
+        type: "delay",
+        target: { routeId: "test-route", departureTime: depTime },
+        startTime: 0,
+        endTime: null,
+        delayHours: 0.5,
+      },
+    ];
     const results = computeDesiredTokens(makeRoute(), worldTime, events);
     assert.equal(results.length, 1);
     assert.equal(results[0].delayed, true);
   });
 
   it("returns delayed: false when delay event targets a different departure", () => {
-    const events = [{
-      id: "evt1",
-      type: "delay",
-      target: { routeId: "test-route", departureTime: 99999 },
-      startTime: 0,
-      endTime: null,
-      delayHours: 0.5,
-    }];
+    const events = [
+      {
+        id: "evt1",
+        type: "delay",
+        target: { routeId: "test-route", departureTime: 99999 },
+        startTime: 0,
+        endTime: null,
+        delayHours: 0.5,
+      },
+    ];
     const results = computeDesiredTokens(makeRoute(), worldTime, events);
     assert.equal(results.length, 1);
     assert.equal(results[0].delayed, false);

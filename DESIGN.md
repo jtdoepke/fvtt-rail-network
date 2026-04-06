@@ -28,16 +28,12 @@ fvtt-rail-network/
   "title": "Rail Network",
   "description": "Animated train tokens that follow drawn routes based on in-game time. Supports schedules, events, and Calendaria integration.",
   "version": "0.1.0",
-  "authors": [
-    { "name": "jtdoepke" }
-  ],
+  "authors": [{ "name": "jtdoepke" }],
   "compatibility": {
     "minimum": "13",
     "verified": "14"
   },
-  "esmodules": [
-    "scripts/integration.mjs"
-  ],
+  "esmodules": ["scripts/integration.mjs"],
   "relationships": {
     "optional": [
       { "id": "sequencer", "type": "module" },
@@ -64,6 +60,7 @@ All state is computed as a pure function of `game.time.worldTime`. No incrementa
 Routes are composed of one or more Foundry Drawings (polygon polylines, `shape.type: "p"`). Each Drawing represents a track segment. Multiple Drawings chain together end-to-end to form a complete route.
 
 This supports:
+
 - **Extending lines over time**: New segments with a future `effectiveStart`
 - **Temporary detours**: Segments with both `effectiveStart` and `effectiveEnd`
 - **Gradual rail construction**: The Sharn-Flamekeep line could start as Sharn-Wroat, then Wroat-Starilaskur opens months later
@@ -93,16 +90,18 @@ drawing.flags["rail-network"] = {
     { pointIndex: 3, name: "First Tower", hoursFromPrev: 1.1, dwellMinutes: 5 },
     { pointIndex: 8, name: "Wroat", hoursFromPrev: 6.8, dwellMinutes: 10 },
   ],
-}
+};
 ```
 
 **Station fields:**
+
 - `pointIndex`: Index into the Drawing's `shape.points` flat array (each point is 2 values: x, y)
 - `name`: Station display name
 - `hoursFromPrev`: Travel time in hours since the previous station (omit for the first station in a route)
 - `dwellMinutes`: How long the train stops here (0 for pass-through, 10 typical for a stop)
 
 **Drawing coordinate model** (validated against Foundry v13):
+
 - `shape.points` is a flat array: `[x0, y0, x1, y1, ...]`
 - Coordinates are relative to `document.x`, `document.y`
 - Absolute position of point i: `{ x: doc.x + points[i*2], y: doc.y + points[i*2+1] }`
@@ -138,11 +137,13 @@ Stored in a module world setting (`rail-network.routes`):
 ```
 
 **Segment fields:**
+
 - `segmentId`: Matches a Drawing's `rail-network.segmentId` flag
 - `effectiveStart`: World timestamp when this segment joins the route (null = always)
 - `effectiveEnd`: World timestamp when this segment leaves the route (null = permanent)
 
 **Schedule fields:**
+
 - `intervalDays`: Period of the schedule cycle
 - `startDayOffset`: Which day within the cycle has departures (stagger outbound/return)
 - `departureHours`: Array of departure times on each run day
@@ -171,7 +172,7 @@ token.flags["rail-network"] = {
   managed: true,
   routeId: "sharn-flamekeep",
   departureTime: 1234567890,
-}
+};
 ```
 
 Token name format: `"Route {N} -- {serviceName}"` where N comes from `routeNumbers`. Odd numbers = outbound (away from Passage), even = return, following real-world railway convention.
@@ -201,16 +202,17 @@ An event is **active** when: `(startTime ?? 0) <= worldTime AND (endTime == null
 
 **Event types:**
 
-| Type | Target | Effect |
-|------|--------|--------|
-| `closeLine` | route | No departures generated. Active trains halt at next station. |
-| `blockTrack` | route + station | All trains stop at the named station. |
-| `delay` | route + departure | Specific departure delayed by `delayHours`. Supports recovery. |
-| `destroy` | route + departure | Specific departure removed. Token deleted. |
-| `halt` | route + departure | Specific train stops at named station with infinite dwell. |
-| `extraDeparture` | route + station | Unscheduled departure from a mid-route station. |
+| Type             | Target            | Effect                                                         |
+| ---------------- | ----------------- | -------------------------------------------------------------- |
+| `closeLine`      | route             | No departures generated. Active trains halt at next station.   |
+| `blockTrack`     | route + station   | All trains stop at the named station.                          |
+| `delay`          | route + departure | Specific departure delayed by `delayHours`. Supports recovery. |
+| `destroy`        | route + departure | Specific departure removed. Token deleted.                     |
+| `halt`           | route + departure | Specific train stops at named station with infinite dwell.     |
+| `extraDeparture` | route + station   | Unscheduled departure from a mid-route station.                |
 
 **Delay recovery** has three modes:
+
 - **Permanent** (`endTime: null`, no `recoveryRate`): Train runs late forever
 - **Linear via endTime**: Delay decreases linearly from `delayHours` to 0 between `startTime` and `endTime`
 - **Fixed-rate via recoveryRate**: Delay decreases at `recoveryRate` hours per hour. Takes precedence over `endTime` if both set.
@@ -219,37 +221,38 @@ An event is **active** when: `(startTime ?? 0) <= worldTime AND (endTime == null
 
 All implemented and tested (41 tests passing). See `lightning-rail.mjs` and `lightning-rail.test.mjs`.
 
-| Function | Purpose |
-|----------|---------|
-| `resolveRoutePath(segments, worldTime)` | Chains segment configs with temporal filtering. Drops duplicate junction points. |
-| `buildRouteSegments(path)` | Converts resolved path into station-to-station legs with cumulative pixel distances. Returns `{legs, totalJourneySeconds}`. |
-| `getTrainPosition(legs, totalJourneySeconds, elapsedSeconds)` | Walks legs chronologically (dwell then travel), interpolates between waypoints. Returns `{x, y, atStation}` or null. |
-| `findAllActiveDepartures(worldTime, schedule, maxJourneySeconds)` | Lookback algorithm finding all concurrent active trains. Handles multi-day intervals with `startDayOffset`. |
-| `getActiveEvents(events, routeId, worldTime)` | Filters events by route and time window. Handles null startTime/endTime. |
-| `computeEffectiveDelay(event, worldTime)` | Computes current delay accounting for linear or fixed-rate recovery. |
-| `findExtraDepartures(activeEvents, worldTime, legs)` | Finds synthetic departures from extraDeparture events starting at mid-route stations. |
+| Function                                                          | Purpose                                                                                                                     |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `resolveRoutePath(segments, worldTime)`                           | Chains segment configs with temporal filtering. Drops duplicate junction points.                                            |
+| `buildRouteSegments(path)`                                        | Converts resolved path into station-to-station legs with cumulative pixel distances. Returns `{legs, totalJourneySeconds}`. |
+| `getTrainPosition(legs, totalJourneySeconds, elapsedSeconds)`     | Walks legs chronologically (dwell then travel), interpolates between waypoints. Returns `{x, y, atStation}` or null.        |
+| `findAllActiveDepartures(worldTime, schedule, maxJourneySeconds)` | Lookback algorithm finding all concurrent active trains. Handles multi-day intervals with `startDayOffset`.                 |
+| `getActiveEvents(events, routeId, worldTime)`                     | Filters events by route and time window. Handles null startTime/endTime.                                                    |
+| `computeEffectiveDelay(event, worldTime)`                         | Computes current delay accounting for linear or fixed-rate recovery.                                                        |
+| `findExtraDepartures(activeEvents, worldTime, legs)`              | Finds synthetic departures from extraDeparture events starting at mid-route stations.                                       |
 
 ## Foundry Integration Layer
 
 ### Hooks
 
-| Hook | Signature | Purpose |
-|------|-----------|---------|
-| `init` | `()` | Register settings, expose `game.modules.get("rail-network").api` |
-| `updateWorldTime` | `(worldTime, dt, options, userId)` | Main driver: recalculate all positions, reconcile tokens (GM only). Only `worldTime` is used. |
-| `canvasReady` | `(canvas)` | Refresh positions on scene load, clear route cache |
-| `createDrawing` | `(drawing, options, userId)` | Invalidate route geometry cache if Drawing has rail-network flags |
-| `updateDrawing` | `(drawing, change, options, userId)` | Invalidate cache and reposition tokens when track Drawing geometry changes |
-| `deleteDrawing` | `(drawing, options, userId)` | Invalidate cache, reposition tokens (truncate routes missing segments) |
-| `getSceneControlButtons` | `(controls)` | Add Rail Network toolbar group to token controls (GM only) |
-| `calendaria.eventTriggered` | `(note)` | Process lightning rail calendar events |
-| `calendaria.ready` | `()` | Confirm Calendaria integration available |
+| Hook                        | Signature                            | Purpose                                                                                       |
+| --------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------- |
+| `init`                      | `()`                                 | Register settings, expose `game.modules.get("rail-network").api`                              |
+| `updateWorldTime`           | `(worldTime, dt, options, userId)`   | Main driver: recalculate all positions, reconcile tokens (GM only). Only `worldTime` is used. |
+| `canvasReady`               | `(canvas)`                           | Refresh positions on scene load, clear route cache                                            |
+| `createDrawing`             | `(drawing, options, userId)`         | Invalidate route geometry cache if Drawing has rail-network flags                             |
+| `updateDrawing`             | `(drawing, change, options, userId)` | Invalidate cache and reposition tokens when track Drawing geometry changes                    |
+| `deleteDrawing`             | `(drawing, options, userId)`         | Invalidate cache, reposition tokens (truncate routes missing segments)                        |
+| `getSceneControlButtons`    | `(controls)`                         | Add Rail Network toolbar group to token controls (GM only)                                    |
+| `calendaria.eventTriggered` | `(note)`                             | Process lightning rail calendar events                                                        |
+| `calendaria.ready`          | `()`                                 | Confirm Calendaria integration available                                                      |
 
 **Drawing change handling** (inspired by Patrol module): When track Drawings are created, modified, or deleted, the route geometry cache must be invalidated and `updateAllTrains()` re-run. This ensures tokens reposition immediately when a GM edits track geometry, rather than waiting for the next `updateWorldTime` tick.
 
 ### Token Lifecycle (`updateAllTrains`)
 
 For each route on each world time update:
+
 1. Find all active departures (accounting for events, closures, blocks)
 2. Find all existing managed tokens on the current scene (by `rail-network.managed` flag)
 3. **Match** existing tokens to active departures by `departureTime` flag
@@ -277,12 +280,14 @@ Token creation uses `canvas.scene.createEmbeddedDocuments("Token", [...])`. No A
 Uses `foundry.applications.api.DialogV2` (validated in v13 and v14). Static convenience methods: `DialogV2.confirm()`, `DialogV2.prompt()`, `DialogV2.input()`, `DialogV2.wait()`.
 
 **Event dialog** (`eventDialog()`):
+
 - Route dropdown, event type dropdown
 - Dynamic fields per event type (station selector, departure selector, delay hours, etc.)
 - Start/end time fields supporting "now", "none" (null), or specific values
 - Optional Calendaria checkbox to create a calendar note
 
 **Segment setup dialog** (`setupDialog()`):
+
 - Drawing selector (or auto-detect from `canvas.drawings.controlled[0]`)
 - Segment ID input
 - Per-point station configuration (name, hoursFromPrev, dwellMinutes)
@@ -291,10 +296,16 @@ Uses `foundry.applications.api.DialogV2` (validated in v13 and v14). Static conv
 
 ```javascript
 game.settings.register("rail-network", "routes", {
-  scope: "world", config: false, type: Array, default: [],
+  scope: "world",
+  config: false,
+  type: Array,
+  default: [],
 });
 game.settings.register("rail-network", "events", {
-  scope: "world", config: false, type: Array, default: [],
+  scope: "world",
+  config: false,
+  type: Array,
+  default: [],
 });
 ```
 
@@ -304,12 +315,12 @@ game.settings.register("rail-network", "events", {
 
 Inspired by the Patrol module's `getSceneControlButtons` integration. Adds a Rail Network toolbar group to the token controls (GM only):
 
-| Button | Icon | Action |
-|--------|------|--------|
-| Refresh Trains | `fa-train` | Force-recalculate all positions (`refresh()`) |
-| Event Manager | `fa-calendar-exclamation` | Open event creation dialog (`eventDialog()`) |
-| Tag Segment | `fa-route` | Tag selected Drawing as track segment (`setupDialog()`) |
-| Route Status | `fa-clipboard-list` | Show all routes, trains, events in chat (`status()`) |
+| Button         | Icon                      | Action                                                  |
+| -------------- | ------------------------- | ------------------------------------------------------- |
+| Refresh Trains | `fa-train`                | Force-recalculate all positions (`refresh()`)           |
+| Event Manager  | `fa-calendar-exclamation` | Open event creation dialog (`eventDialog()`)            |
+| Tag Segment    | `fa-route`                | Tag selected Drawing as track segment (`setupDialog()`) |
+| Route Status   | `fa-clipboard-list`       | Show all routes, trains, events in chat (`status()`)    |
 
 ```javascript
 Hooks.on("getSceneControlButtons", (controls) => {
@@ -319,7 +330,9 @@ Hooks.on("getSceneControlButtons", (controls) => {
     title: "Rail Network",
     icon: "fa-solid fa-train",
     layer: "tokens",
-    tools: [ /* ... */ ],
+    tools: [
+      /* ... */
+    ],
   });
 });
 ```
@@ -328,15 +341,15 @@ Hooks.on("getSceneControlButtons", (controls) => {
 
 Inspired by Patrol module's pattern of firing custom hooks (`prePatrolAlerted`, `patrolSpotted`, etc.) that other modules can consume or block. Rail-network fires hooks at key train lifecycle events:
 
-| Hook | Signature | Purpose |
-|------|-----------|---------|
-| `rail-network.trainDeparted` | `(routeId, departureTime, stationName, tokenDoc)` | Fired when a new train token is created at its origin station |
-| `rail-network.trainArrived` | `(routeId, departureTime, stationName, tokenDoc)` | Fired when a train reaches a station (during dwell) |
-| `rail-network.trainCompleted` | `(routeId, departureTime, tokenDoc)` | Fired when a train reaches its final destination and token is deleted |
-| `rail-network.trainDelayed` | `(routeId, departureTime, delayHours, event)` | Fired when a delay event affects a train |
-| `rail-network.trainDestroyed` | `(routeId, departureTime, event)` | Fired when a destroy event removes a train |
-| `rail-network.routeClosed` | `(routeId, event)` | Fired when a closeLine event activates |
-| `rail-network.trackBlocked` | `(routeId, stationName, event)` | Fired when a blockTrack event activates |
+| Hook                          | Signature                                         | Purpose                                                               |
+| ----------------------------- | ------------------------------------------------- | --------------------------------------------------------------------- |
+| `rail-network.trainDeparted`  | `(routeId, departureTime, stationName, tokenDoc)` | Fired when a new train token is created at its origin station         |
+| `rail-network.trainArrived`   | `(routeId, departureTime, stationName, tokenDoc)` | Fired when a train reaches a station (during dwell)                   |
+| `rail-network.trainCompleted` | `(routeId, departureTime, tokenDoc)`              | Fired when a train reaches its final destination and token is deleted |
+| `rail-network.trainDelayed`   | `(routeId, departureTime, delayHours, event)`     | Fired when a delay event affects a train                              |
+| `rail-network.trainDestroyed` | `(routeId, departureTime, event)`                 | Fired when a destroy event removes a train                            |
+| `rail-network.routeClosed`    | `(routeId, event)`                                | Fired when a closeLine event activates                                |
+| `rail-network.trackBlocked`   | `(routeId, stationName, event)`                   | Fired when a blockTrack event activates                               |
 
 These hooks enable other modules to react to train events -- e.g., a weather module could trigger delays, a combat module could spawn encounters at stations, or a notification module could announce arrivals to players.
 
@@ -369,32 +382,32 @@ This pattern is adapted from the Patrol module's socket framework, which uses `g
 
 Exposed at `game.modules.get("rail-network").api` and aliased to `game.railNetwork`:
 
-| Method | Description |
-|--------|-------------|
-| `refresh()` | Force-update all positions now |
-| `status()` | Log routes, active departures, tokens, events |
-| `routes()` | List all routes with stations, journey times, schedules |
-| `nextDeparture(routeId)` | When does the next train leave? |
-| `addEvent(event)` | Add an event, returns event ID |
-| `removeEvent(eventId)` | Remove an event by ID |
-| `listEvents(routeId?)` | List events, optionally filtered by route |
-| `clearEvents(routeId?)` | Clear events for a route or all routes |
-| `scheduleEvent(event, date)` | Create a Calendaria note that triggers a rail event |
-| `eventDialog()` | Open event management dialog |
-| `tagSegment(segmentId, stations, drawingId?)` | Tag a Drawing as a track segment |
-| `editSegment(segmentId)` | Edit an existing segment's station config |
-| `setupDialog()` | Interactive dialog for tagging Drawings |
-| `installMacros()` | Create hotbar macros in Macro Directory |
+| Method                                        | Description                                             |
+| --------------------------------------------- | ------------------------------------------------------- |
+| `refresh()`                                   | Force-update all positions now                          |
+| `status()`                                    | Log routes, active departures, tokens, events           |
+| `routes()`                                    | List all routes with stations, journey times, schedules |
+| `nextDeparture(routeId)`                      | When does the next train leave?                         |
+| `addEvent(event)`                             | Add an event, returns event ID                          |
+| `removeEvent(eventId)`                        | Remove an event by ID                                   |
+| `listEvents(routeId?)`                        | List events, optionally filtered by route               |
+| `clearEvents(routeId?)`                       | Clear events for a route or all routes                  |
+| `scheduleEvent(event, date)`                  | Create a Calendaria note that triggers a rail event     |
+| `eventDialog()`                               | Open event management dialog                            |
+| `tagSegment(segmentId, stations, drawingId?)` | Tag a Drawing as a track segment                        |
+| `editSegment(segmentId)`                      | Edit an existing segment's station config               |
+| `setupDialog()`                               | Interactive dialog for tagging Drawings                 |
+| `installMacros()`                             | Create hotbar macros in Macro Directory                 |
 
 ### Hotbar Macros
 
-| Macro | Action |
-|-------|--------|
-| Tag Segment | Select Drawing, tag as track segment |
-| Edit Segment | Edit stations on a tagged Drawing |
-| Route Status | Show all routes, trains, events in chat |
-| Event Manager | Open event creation dialog |
-| Refresh Trains | Force-recalculate all positions |
+| Macro          | Action                                  |
+| -------------- | --------------------------------------- |
+| Tag Segment    | Select Drawing, tag as track segment    |
+| Edit Segment   | Edit stations on a tagged Drawing       |
+| Route Status   | Show all routes, trains, events in chat |
+| Event Manager  | Open event creation dialog              |
+| Refresh Trains | Force-recalculate all positions         |
 
 ## Calendaria Integration
 
@@ -406,6 +419,7 @@ When Calendaria is installed, rail events can be linked to calendar dates:
 - The system degrades gracefully without Calendaria (updateWorldTime hook still works)
 
 **Note flagData schema:**
+
 ```javascript
 {
   railNetwork: {
@@ -421,25 +435,25 @@ When Calendaria is installed, rail events can be linked to calendar dates:
 
 The following APIs were tested against Foundry VTT v13 Build 351 via browser console and verified against v14 Build 359 source:
 
-| API | Status | Notes |
-|-----|--------|-------|
-| `canvas.drawings.controlled[0]` | Works | Returns selected Drawing |
-| `DrawingDocument.shape.points` | Works | Flat array `[x0,y0,x1,y1,...]` relative to `doc.x, doc.y` |
-| `doc.setFlag("rail-network", ...)` | Works | Requires module to be registered and active |
-| `doc.setFlag("world", ...)` | Works | Always available (used for prototyping) |
-| `scene.createEmbeddedDocuments("Token", [...])` | Works | Returns array of created TokenDocuments |
-| `scene.deleteEmbeddedDocuments("Token", [ids])` | Works | |
-| `tokenDoc.update({x, y}, {animation: ...})` | Works | Position doesn't update synchronously -- lags behind animation |
-| `canvas.tokens.get(tokenDoc.id)` | Works | Returns the placeable (visual object) |
-| `new Sequence().animation().on(placeable).moveTowards({x,y}).moveSpeed(200).play()` | Works | `.on()` requires placeable, not document |
-| `game.settings.register/get/set` | Works | `"world"` scope for settings |
-| `Hooks.on("updateWorldTime", ...)` | Works | |
-| `Hooks.on("calendaria.eventTriggered", ...)` | Works | |
-| `foundry.applications.api.DialogV2` | Works | Constructor + static helpers: `.confirm()`, `.prompt()`, `.input()`, `.wait()` |
-| `Macro.create()` | Works | |
-| `game.time.worldTime` | Works | Returns seconds since epoch |
-| `CALENDARIA.api` | Works | 175 methods. `getAllNotes` (not `getNotes`), `createNote`, `updateNote`, `deleteNote`, `getNote` |
-| `canvas.tokens.placeables.filter(...)` | Works | Flag-based token lookup |
+| API                                                                                 | Status | Notes                                                                                            |
+| ----------------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------ |
+| `canvas.drawings.controlled[0]`                                                     | Works  | Returns selected Drawing                                                                         |
+| `DrawingDocument.shape.points`                                                      | Works  | Flat array `[x0,y0,x1,y1,...]` relative to `doc.x, doc.y`                                        |
+| `doc.setFlag("rail-network", ...)`                                                  | Works  | Requires module to be registered and active                                                      |
+| `doc.setFlag("world", ...)`                                                         | Works  | Always available (used for prototyping)                                                          |
+| `scene.createEmbeddedDocuments("Token", [...])`                                     | Works  | Returns array of created TokenDocuments                                                          |
+| `scene.deleteEmbeddedDocuments("Token", [ids])`                                     | Works  |                                                                                                  |
+| `tokenDoc.update({x, y}, {animation: ...})`                                         | Works  | Position doesn't update synchronously -- lags behind animation                                   |
+| `canvas.tokens.get(tokenDoc.id)`                                                    | Works  | Returns the placeable (visual object)                                                            |
+| `new Sequence().animation().on(placeable).moveTowards({x,y}).moveSpeed(200).play()` | Works  | `.on()` requires placeable, not document                                                         |
+| `game.settings.register/get/set`                                                    | Works  | `"world"` scope for settings                                                                     |
+| `Hooks.on("updateWorldTime", ...)`                                                  | Works  |                                                                                                  |
+| `Hooks.on("calendaria.eventTriggered", ...)`                                        | Works  |                                                                                                  |
+| `foundry.applications.api.DialogV2`                                                 | Works  | Constructor + static helpers: `.confirm()`, `.prompt()`, `.input()`, `.wait()`                   |
+| `Macro.create()`                                                                    | Works  |                                                                                                  |
+| `game.time.worldTime`                                                               | Works  | Returns seconds since epoch                                                                      |
+| `CALENDARIA.api`                                                                    | Works  | 175 methods. `getAllNotes` (not `getNotes`), `createNote`, `updateNote`, `deleteNote`, `getNote` |
+| `canvas.tokens.placeables.filter(...)`                                              | Works  | Flag-based token lookup                                                                          |
 
 **Key finding**: Token `x`/`y` are integer fields. Token image is `texture: { src: "..." }` (not `img`). Token size is `width`/`height` in grid units (not `scale`). These field names apply to both v13 and v14.
 
@@ -451,14 +465,14 @@ The following APIs were tested against Foundry VTT v13 Build 351 via browser con
 
 ## Example Routes
 
-| Route | Service | Numbers | Schedule | Journey |
-|-------|---------|---------|----------|---------|
-| Sharn - Flamekeep | The Orien Express | 1, 3 (out) | Daily 14:00, 22:00 | ~61.8h |
-| Flamekeep - Sharn | The Orien Express | 2, 4 (ret) | Daily 8:00, 20:00 | ~61.8h |
-| Sharn - Fairhaven | Silver Flame Passage | 5, 7 (out) | Daily 8:00, 20:00 | ~56.2h |
-| Fairhaven - Sharn | Silver Flame Passage | 6, 8 (ret) | Daily 10:00, 22:00 | ~56.2h |
-| Starilaskur - Korranberg | Zilargo Local | 11 (out) | Every 2 days, 10:00 | ~24h |
-| Korranberg - Starilaskur | Zilargo Local | 12 (ret) | Every 2 days (offset), 10:00 | ~24h |
-| Rekkenmark - Vedykar | Karrnath Iron Line | 21 | Every 3 days, 06:00 | ~30h |
+| Route                    | Service              | Numbers    | Schedule                     | Journey |
+| ------------------------ | -------------------- | ---------- | ---------------------------- | ------- |
+| Sharn - Flamekeep        | The Orien Express    | 1, 3 (out) | Daily 14:00, 22:00           | ~61.8h  |
+| Flamekeep - Sharn        | The Orien Express    | 2, 4 (ret) | Daily 8:00, 20:00            | ~61.8h  |
+| Sharn - Fairhaven        | Silver Flame Passage | 5, 7 (out) | Daily 8:00, 20:00            | ~56.2h  |
+| Fairhaven - Sharn        | Silver Flame Passage | 6, 8 (ret) | Daily 10:00, 22:00           | ~56.2h  |
+| Starilaskur - Korranberg | Zilargo Local        | 11 (out)   | Every 2 days, 10:00          | ~24h    |
+| Korranberg - Starilaskur | Zilargo Local        | 12 (ret)   | Every 2 days (offset), 10:00 | ~24h    |
+| Rekkenmark - Vedykar     | Karrnath Iron Line   | 21         | Every 3 days, 06:00          | ~30h    |
 
 Odd numbers = away from Passage (House Orien's seat), even = toward Passage.

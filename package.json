@@ -4,6 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test scripts/engine.test.mjs scripts/integration.test.mjs"
+    "test": "node --test scripts/engine.test.mjs scripts/integration.test.mjs",
+    "lint": "eslint scripts/",
+    "lint:fix": "eslint --fix scripts/",
+    "format": "prettier --write scripts/ *.json *.md",
+    "format:check": "prettier --check scripts/ *.json *.md"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.2.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.4.0",
+    "prettier": "^3.8.1"
   }
 }

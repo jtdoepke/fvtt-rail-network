@@ -16,7 +16,7 @@ npm test
 node --test --test-name-pattern="chains two segments" scripts/engine.test.mjs
 ```
 
-No build step, no linting configured. Tests use Node.js built-in test runner via `node --test`.
+No build step. Tests use Node.js built-in test runner via `node --test`. ESLint + Prettier configured; pre-commit hooks run linting and tests automatically.
 
 ## Architecture
 
@@ -37,9 +37,7 @@ Only `module.json` and `scripts/` are shipped in the release zip.
 
 ### Reference files (not part of the module, not included in releases)
 
-- `lightning-rail.mjs` — Original prototype engine (same code as `scripts/engine.mjs`)
-- `lightning-rail.test.mjs` — Original test suite (same tests as `scripts/engine.test.mjs`)
-- `fvttt_source/` — Gitignored Foundry VTT v13 and v14 source (for API reference)
+- `fvtt_source/` — Gitignored Foundry VTT v13 and v14 source (for API reference)
 - `DESIGN.md` — Not shipped in module zip
 
 ### Core design principle: Stateless Temporal Queries

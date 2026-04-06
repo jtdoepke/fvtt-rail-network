@@ -1,4 +1,4 @@
-import { describe, it, beforeEach } from "node:test";
+import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 // ============================================================================
@@ -23,19 +23,8 @@ function makeDrawingDoc({ x, y, points, segmentId, stations }) {
 
 // Import the function under test — it will be added to engine.mjs since it's
 // a pure function that converts Drawing data to engine path format
-const {
-  drawingToPath,
-  buildRouteSegments,
-  findStationArrivalTime,
-  applyEvents,
-  computeEffectiveDelay,
-  resolveRoutePath,
-  findAllActiveDepartures,
-  getActiveEvents,
-  getTrainPosition,
-  findExtraDepartures,
-  computeDesiredTokens,
-} = await import("./engine.mjs");
+const { drawingToPath, buildRouteSegments, findStationArrivalTime, applyEvents, computeDesiredTokens } =
+  await import("./engine.mjs");
 
 const SECONDS_PER_DAY = 86400;
 
@@ -214,7 +203,13 @@ describe("applyEvents", () => {
   it("delay event with small delay partially reduces elapsed", () => {
     const { legs } = makeTestLegs();
     const events = [
-      { type: "delay", target: { routeId: "r1", departureTime: 1000 }, startTime: 1000, endTime: null, delayHours: 0.5 },
+      {
+        type: "delay",
+        target: { routeId: "r1", departureTime: 1000 },
+        startTime: 1000,
+        endTime: null,
+        delayHours: 0.5,
+      },
     ];
     // elapsed=5000, delay=0.5h=1800s → adjustedElapsed = 5000 - 1800 = 3200
     const result = applyEvents(events, 1000, 5000, legs, 6000);
@@ -224,9 +219,7 @@ describe("applyEvents", () => {
   it("blockTrack clamps elapsed at named station arrival time", () => {
     const { legs } = makeTestLegs();
     // Block at B. Arrival at B = 3900s. Elapsed = 5000 > 3900, so clamp.
-    const events = [
-      { type: "blockTrack", target: { routeId: "r1", stationName: "B" }, startTime: 0, endTime: null },
-    ];
+    const events = [{ type: "blockTrack", target: { routeId: "r1", stationName: "B" }, startTime: 0, endTime: null }];
     const result = applyEvents(events, 1000, 5000, legs, 6000);
     assert.equal(result.adjustedElapsed, 3900);
     assert.equal(result.stationClamp, "B");
@@ -235,9 +228,7 @@ describe("applyEvents", () => {
   it("blockTrack does not clamp if train has not reached station yet", () => {
     const { legs } = makeTestLegs();
     // Block at B. Arrival at B = 3900s. Elapsed = 2000 < 3900, no clamp.
-    const events = [
-      { type: "blockTrack", target: { routeId: "r1", stationName: "B" }, startTime: 0, endTime: null },
-    ];
+    const events = [{ type: "blockTrack", target: { routeId: "r1", stationName: "B" }, startTime: 0, endTime: null }];
     const result = applyEvents(events, 1000, 2000, legs, 3000);
     assert.equal(result.adjustedElapsed, 2000);
     assert.equal(result.stationClamp, null);
@@ -266,7 +257,13 @@ describe("applyEvents", () => {
   it("multiple events: delay + blockTrack applied together", () => {
     const { legs } = makeTestLegs();
     const events = [
-      { type: "delay", target: { routeId: "r1", departureTime: 1000 }, startTime: 1000, endTime: null, delayHours: 0.5 },
+      {
+        type: "delay",
+        target: { routeId: "r1", departureTime: 1000 },
+        startTime: 1000,
+        endTime: null,
+        delayHours: 0.5,
+      },
       { type: "blockTrack", target: { routeId: "r1", stationName: "B" }, startTime: 0, endTime: null },
     ];
     // elapsed=5000, delay=1800s → 3200. Then blockTrack at B arrival=3900. 3200 < 3900 so no clamp.
@@ -339,9 +336,7 @@ describe("computeDesiredTokens", () => {
   it("skips route when closeLine event is active", () => {
     const route = makeRoute();
     const worldTime = 5 * SECONDS_PER_DAY + 15 * SECONDS_PER_HOUR;
-    const events = [
-      { id: "e1", type: "closeLine", target: { routeId: "test-route" }, startTime: 0, endTime: null },
-    ];
+    const events = [{ id: "e1", type: "closeLine", target: { routeId: "test-route" }, startTime: 0, endTime: null }];
     const tokens = computeDesiredTokens(route, worldTime, events);
 
     assert.equal(tokens.length, 0);
@@ -352,7 +347,13 @@ describe("computeDesiredTokens", () => {
     const worldTime = 5 * SECONDS_PER_DAY + 15 * SECONDS_PER_HOUR;
     const depTime = 5 * SECONDS_PER_DAY + 14 * SECONDS_PER_HOUR;
     const events = [
-      { id: "e1", type: "destroy", target: { routeId: "test-route", departureTime: depTime }, startTime: depTime, endTime: null },
+      {
+        id: "e1",
+        type: "destroy",
+        target: { routeId: "test-route", departureTime: depTime },
+        startTime: depTime,
+        endTime: null,
+      },
     ];
     const tokens = computeDesiredTokens(route, worldTime, events);
 
@@ -365,7 +366,13 @@ describe("computeDesiredTokens", () => {
     const depTime = 5 * SECONDS_PER_DAY + 14 * SECONDS_PER_HOUR;
     const worldTime = depTime + 2 * SECONDS_PER_HOUR;
     const events = [
-      { id: "e1", type: "blockTrack", target: { routeId: "test-route", stationName: "B" }, startTime: 0, endTime: null },
+      {
+        id: "e1",
+        type: "blockTrack",
+        target: { routeId: "test-route", stationName: "B" },
+        startTime: 0,
+        endTime: null,
+      },
     ];
     const tokens = computeDesiredTokens(route, worldTime, events);
 
@@ -399,7 +406,7 @@ describe("computeDesiredTokens", () => {
     const tokens = computeDesiredTokens(route, worldTime, []);
 
     assert.equal(tokens.length, 2);
-    const routeNums = tokens.map(t => t.routeNum).sort();
+    const routeNums = tokens.map((t) => t.routeNum).sort();
     assert.ok(routeNums.includes("1"));
     assert.ok(routeNums.includes("3"));
   });
@@ -410,7 +417,14 @@ describe("computeDesiredTokens", () => {
     // 1 hour after departure, but with 0.5h delay → effectively only 0.5h into journey
     const worldTime = depTime + 1 * SECONDS_PER_HOUR;
     const events = [
-      { id: "e1", type: "delay", target: { routeId: "test-route", departureTime: depTime }, startTime: depTime, endTime: null, delayHours: 0.5 },
+      {
+        id: "e1",
+        type: "delay",
+        target: { routeId: "test-route", departureTime: depTime },
+        startTime: depTime,
+        endTime: null,
+        delayHours: 0.5,
+      },
     ];
     const tokensWithDelay = computeDesiredTokens(route, worldTime, events);
     const tokensWithout = computeDesiredTokens(route, worldTime, []);
@@ -422,7 +436,7 @@ describe("computeDesiredTokens", () => {
     // Both should exist but at different positions
     assert.notDeepEqual(
       { x: tokensWithDelay[0].x, y: tokensWithDelay[0].y },
-      { x: tokensWithout[0].x, y: tokensWithout[0].y }
+      { x: tokensWithout[0].x, y: tokensWithout[0].y },
     );
   });
 
@@ -431,9 +445,11 @@ describe("computeDesiredTokens", () => {
     const worldTime = 5 * SECONDS_PER_DAY + 10 * SECONDS_PER_HOUR; // before normal departure
     const events = [
       {
-        id: "ex1", type: "extraDeparture",
+        id: "ex1",
+        type: "extraDeparture",
         target: { routeId: "test-route", stationName: "B" },
-        startTime: worldTime - 1000, endTime: null,
+        startTime: worldTime - 1000,
+        endTime: null,
       },
     ];
     const tokens = computeDesiredTokens(route, worldTime, events);

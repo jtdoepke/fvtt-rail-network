@@ -13,9 +13,7 @@
     "minimum": "14",
     "verified": "14"
   },
-  "esmodules": [
-    "scripts/integration.mjs"
-  ],
+  "esmodules": ["scripts/integration.mjs"],
   "relationships": {
     "optional": [
       { "id": "sequencer", "type": "module" },

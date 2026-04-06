@@ -12,7 +12,6 @@ import {
   findExtraDepartures,
   drawingToPath,
   applyEvents,
-  computeDesiredTokens,
   normalizeSchedule,
   applyDirection,
   parseCronExpression,
@@ -52,13 +51,15 @@ const DELAYED_STATUS_ID = "rail-network-delayed";
 async function setDelayedStatus(tokenDoc, active) {
   const token = canvas.tokens.get(tokenDoc.id);
   if (!token?.actor) return;
-  const existing = token.actor.effects.find(e => e.statuses.has(DELAYED_STATUS_ID));
+  const existing = token.actor.effects.find((e) => e.statuses.has(DELAYED_STATUS_ID));
   if (active && !existing) {
-    await token.actor.createEmbeddedDocuments("ActiveEffect", [{
-      name: "Delayed",
-      img: "icons/svg/clockwork.svg",
-      statuses: [DELAYED_STATUS_ID],
-    }]);
+    await token.actor.createEmbeddedDocuments("ActiveEffect", [
+      {
+        name: "Delayed",
+        img: "icons/svg/clockwork.svg",
+        statuses: [DELAYED_STATUS_ID],
+      },
+    ]);
   } else if (!active && existing) {
     await existing.delete();
   }
@@ -78,7 +79,7 @@ function invalidateCache(segmentId) {
  * Caches Drawing-derived paths for performance.
  */
 function resolveRouteWithDrawings(route, worldTime) {
-  const enrichedSegments = route.segments.map(seg => {
+  const enrichedSegments = route.segments.map((seg) => {
     // Check cache first
     if (_pathCache.has(seg.segmentId)) {
       return { ...seg, path: _pathCache.get(seg.segmentId) };
@@ -86,7 +87,7 @@ function resolveRouteWithDrawings(route, worldTime) {
 
     // Look for a Drawing on the current scene with matching segmentId
     const drawing = canvas.drawings?.placeables?.find(
-      d => d.document.flags?.[MODULE_ID]?.segmentId === seg.segmentId
+      (d) => d.document.flags?.[MODULE_ID]?.segmentId === seg.segmentId,
     );
 
     if (drawing) {
@@ -111,7 +112,7 @@ function fireHook(hookName, ...args) {
 
   if (game.user.isGM) {
     // Relay serializable args to non-GM clients
-    const safeArgs = args.map(a => {
+    const safeArgs = args.map((a) => {
       if (a && typeof a === "object" && a.constructor?.name?.includes("Document")) {
         return a.id; // send ID instead of document
       }
@@ -149,9 +150,7 @@ async function updateAllTrains(worldTime) {
     const routes = game.settings.get(MODULE_ID, "routes");
     const allEvents = game.settings.get(MODULE_ID, "events");
     // Get existing managed tokens
-    const existingTokens = canvas.scene.tokens.filter(
-      t => t.flags?.[MODULE_ID]?.managed
-    );
+    const existingTokens = canvas.scene.tokens.filter((t) => t.flags?.[MODULE_ID]?.managed);
     const existingByKey = new Map();
     for (const t of existingTokens) {
       const key = `${t.flags[MODULE_ID].routeId}::${t.flags[MODULE_ID].departureTime}::${t.flags[MODULE_ID].routeNum ?? ""}`;
@@ -176,17 +175,19 @@ async function updateAllTrains(worldTime) {
             };
           };
         }
-      } catch { /* Calendaria not ready */ }
+      } catch {
+        /* Calendaria not ready */
+      }
     }
 
     // Path resolver using Drawing cache
     const pathResolver = (segments, wt) => {
-      const enriched = segments.map(seg => {
+      const enriched = segments.map((seg) => {
         if (_pathCache.has(seg.segmentId)) {
           return { ...seg, path: _pathCache.get(seg.segmentId) };
         }
         const drawing = canvas.drawings?.placeables?.find(
-          d => d.document.flags?.[MODULE_ID]?.segmentId === seg.segmentId
+          (d) => d.document.flags?.[MODULE_ID]?.segmentId === seg.segmentId,
         );
         if (drawing) {
           const path = drawingToPath(drawing.document);
@@ -216,8 +217,13 @@ async function updateAllTrains(worldTime) {
       const activeEvents = getActiveEvents(allEvents, normalized.id, worldTime);
 
       // closeLine → skip entirely
-      if (activeEvents.some(e => e.type === "closeLine")) {
-        fireHookOnce("routeClosed", normalized.id, normalized.id, activeEvents.find(e => e.type === "closeLine"));
+      if (activeEvents.some((e) => e.type === "closeLine")) {
+        fireHookOnce(
+          "routeClosed",
+          normalized.id,
+          normalized.id,
+          activeEvents.find((e) => e.type === "closeLine"),
+        );
         continue;
       }
 
@@ -227,10 +233,16 @@ async function updateAllTrains(worldTime) {
         const key = JSON.stringify(segments) + "|" + (direction ?? "outbound");
         if (tripCache.has(key)) return tripCache.get(key);
         const path = pathResolver(segments, worldTime);
-        if (!path || path.length < 2) { tripCache.set(key, null); return null; }
+        if (!path || path.length < 2) {
+          tripCache.set(key, null);
+          return null;
+        }
         const directedPath = applyDirection(path, direction);
         const result = buildRouteSegments(directedPath);
-        if (result.legs.length === 0) { tripCache.set(key, null); return null; }
+        if (result.legs.length === 0) {
+          tripCache.set(key, null);
+          return null;
+        }
         tripCache.set(key, result);
         return result;
       };
@@ -247,7 +259,7 @@ async function updateAllTrains(worldTime) {
       const firstTrip = normalized.schedule[0];
       const defaultResolved = firstTrip ? resolveTrip(firstTrip.segments, firstTrip.direction) : null;
       const extras = defaultResolved
-        ? findExtraDepartures(activeEvents, worldTime, defaultResolved.legs).map(dep => ({
+        ? findExtraDepartures(activeEvents, worldTime, defaultResolved.legs).map((dep) => ({
             ...dep,
             routeNum: "X",
             direction: firstTrip.direction,
@@ -266,19 +278,36 @@ async function updateAllTrains(worldTime) {
         const { skip, adjustedElapsed } = applyEvents(activeEvents, dep.departureTime, dep.elapsed, legs, worldTime);
 
         if (skip) {
-          fireHook("trainDestroyed", normalized.id, dep.departureTime,
-            activeEvents.find(e => e.type === "destroy" && e.target.departureTime === dep.departureTime));
+          fireHook(
+            "trainDestroyed",
+            normalized.id,
+            dep.departureTime,
+            activeEvents.find((e) => e.type === "destroy" && e.target.departureTime === dep.departureTime),
+          );
           continue;
         }
 
-        const delayEvt = activeEvents.find(e => e.type === "delay" && e.target.departureTime === dep.departureTime);
+        const delayEvt = activeEvents.find((e) => e.type === "delay" && e.target.departureTime === dep.departureTime);
         if (delayEvt) {
-          fireHookOnce("trainDelayed", `${normalized.id}::${dep.departureTime}`, normalized.id, dep.departureTime, computeEffectiveDelay(delayEvt, worldTime), delayEvt);
+          fireHookOnce(
+            "trainDelayed",
+            `${normalized.id}::${dep.departureTime}`,
+            normalized.id,
+            dep.departureTime,
+            computeEffectiveDelay(delayEvt, worldTime),
+            delayEvt,
+          );
         }
 
-        const blockEvt = activeEvents.find(e => e.type === "blockTrack");
+        const blockEvt = activeEvents.find((e) => e.type === "blockTrack");
         if (blockEvt) {
-          fireHookOnce("trackBlocked", `${normalized.id}::${blockEvt.target.stationName}`, normalized.id, blockEvt.target.stationName, blockEvt);
+          fireHookOnce(
+            "trackBlocked",
+            `${normalized.id}::${blockEvt.target.stationName}`,
+            normalized.id,
+            blockEvt.target.stationName,
+            blockEvt,
+          );
         }
 
         const pos = getTrainPosition(legs, totalJourneySeconds, adjustedElapsed);
@@ -330,7 +359,8 @@ async function updateAllTrains(worldTime) {
         const actor = game.actors.get(desired.actorId);
         if (actor) {
           const tokenDoc = await actor.getTokenDocument({
-            x, y,
+            x,
+            y,
             actorLink: false,
             name: desired.name,
             flags: {
@@ -342,8 +372,13 @@ async function updateAllTrains(worldTime) {
               },
             },
           });
-          toCreate.push({ data: tokenDoc.toObject(), delayed: desired.delayed,
-            routeId: desired.routeId, departureTime: desired.departureTime, atStation: desired.atStation });
+          toCreate.push({
+            data: tokenDoc.toObject(),
+            delayed: desired.delayed,
+            routeId: desired.routeId,
+            departureTime: desired.departureTime,
+            atStation: desired.atStation,
+          });
         }
       } else {
         // Update token name if it changed
@@ -364,8 +399,14 @@ async function updateAllTrains(worldTime) {
 
         // Check station arrival
         if (desired.atStation) {
-          fireHookOnce("trainArrived", `${desired.routeId}::${desired.departureTime}::${desired.atStation}`,
-            desired.routeId, desired.departureTime, desired.atStation, existing);
+          fireHookOnce(
+            "trainArrived",
+            `${desired.routeId}::${desired.departureTime}::${desired.atStation}`,
+            desired.routeId,
+            desired.departureTime,
+            desired.atStation,
+            existing,
+          );
         }
       }
     }
@@ -374,14 +415,21 @@ async function updateAllTrains(worldTime) {
       if (!desiredByKey.has(key)) {
         toDelete.push(existing.id);
         _intendedPositions.delete(existing.id);
-        fireHook("trainCompleted", existing.flags[MODULE_ID].routeId,
-          existing.flags[MODULE_ID].departureTime, existing);
+        fireHook(
+          "trainCompleted",
+          existing.flags[MODULE_ID].routeId,
+          existing.flags[MODULE_ID].departureTime,
+          existing,
+        );
       }
     }
 
     // Execute batch operations
     if (toCreate.length > 0) {
-      const created = await canvas.scene.createEmbeddedDocuments("Token", toCreate.map(c => c.data));
+      const created = await canvas.scene.createEmbeddedDocuments(
+        "Token",
+        toCreate.map((c) => c.data),
+      );
       for (let i = 0; i < created.length; i++) {
         const doc = created[i];
         _intendedPositions.set(doc.id, { x: doc.x, y: doc.y });
@@ -414,12 +462,7 @@ async function updateAllTrains(worldTime) {
       } else if (useSequencer) {
         const placeable = canvas.tokens.get(move.tokenDoc.id);
         if (placeable) {
-          await new Sequence()
-            .animation()
-            .on(placeable)
-            .moveTowards({ x: move.x, y: move.y })
-            .moveSpeed(200)
-            .play();
+          await new Sequence().animation().on(placeable).moveTowards({ x: move.x, y: move.y }).moveSpeed(200).play();
         }
       } else {
         const context = { animation: { duration: 2000 } };
@@ -472,7 +515,9 @@ function getCalendaria() {
     const cal = calApi.getActiveCalendar();
     if (!cal) return null;
     return { api: calApi, cal };
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 function getCalendarInfo() {
@@ -480,10 +525,12 @@ function getCalendarInfo() {
   if (!c) return undefined;
   try {
     return {
-      weekdayNames: c.cal.weekdaysArray.map(w => w.name),
-      monthNames: c.cal.monthsArray.map(m => m.name),
+      weekdayNames: c.cal.weekdaysArray.map((w) => w.name),
+      monthNames: c.cal.monthsArray.map((m) => m.name),
     };
-  } catch { return undefined; }
+  } catch {
+    return undefined;
+  }
 }
 
 function formatWorldTime(t) {
@@ -492,14 +539,19 @@ function formatWorldTime(t) {
   if (c) {
     try {
       const comp = c.cal.timeToComponents(t);
-      return c.api.formatDate({
-        year: comp.year + (c.cal.years?.yearZero ?? 0),
-        month: comp.month + 1,
-        day: comp.dayOfMonth + 1,
-        hour: comp.hour,
-        minute: comp.minute,
-      }, 'D MMMM YYYY, HH:mm');
-    } catch { /* fall through */ }
+      return c.api.formatDate(
+        {
+          year: comp.year + (c.cal.years?.yearZero ?? 0),
+          month: comp.month + 1,
+          day: comp.dayOfMonth + 1,
+          hour: comp.hour,
+          minute: comp.minute,
+        },
+        "D MMMM YYYY, HH:mm",
+      );
+    } catch {
+      /* fall through */
+    }
   }
   const day = Math.floor(t / 86400);
   const hour = Math.floor((t % 86400) / 3600);
@@ -512,16 +564,17 @@ function formatWorldTime(t) {
 // ---------------------------------------------------------------------------
 
 function findManagedTokenAtPos(pos) {
-  return canvas.tokens?.placeables?.find(t => {
-    if (!t.document.flags?.[MODULE_ID]?.managed) return false;
-    const b = t.bounds;
-    return b && pos.x >= b.x && pos.x <= b.x + b.width
-            && pos.y >= b.y && pos.y <= b.y + b.height;
-  }) ?? null;
+  return (
+    canvas.tokens?.placeables?.find((t) => {
+      if (!t.document.flags?.[MODULE_ID]?.managed) return false;
+      const b = t.bounds;
+      return b && pos.x >= b.x && pos.x <= b.x + b.width && pos.y >= b.y && pos.y <= b.y + b.height;
+    }) ?? null
+  );
 }
 
 function findStationAtPos(pos, radius = 20) {
-  for (const d of (canvas.drawings?.placeables ?? [])) {
+  for (const d of canvas.drawings?.placeables ?? []) {
     const stations = d.document.flags?.[MODULE_ID]?.stations;
     if (!stations?.length) continue;
     const doc = d.document;
@@ -564,7 +617,12 @@ function findTrainLegInfo(legs, adjustedElapsed) {
     const leg = legs[i];
     // Dwell phase at start station
     if (adjustedElapsed < clock + leg.dwellSeconds) {
-      return { legIndex: i, phase: "dwell", currentStation: leg.startStation.station, nextStation: leg.endStation.station };
+      return {
+        legIndex: i,
+        phase: "dwell",
+        currentStation: leg.startStation.station,
+        nextStation: leg.endStation.station,
+      };
     }
     clock += leg.dwellSeconds;
     // Travel phase
@@ -585,7 +643,7 @@ async function showTrainInfoDialog(token) {
   const worldTime = game.time.worldTime;
   const routes = game.settings.get(MODULE_ID, "routes");
   const allEvents = game.settings.get(MODULE_ID, "events");
-  const route = routes.find(r => r.id === routeId);
+  const route = routes.find((r) => r.id === routeId);
 
   if (!route) {
     ui.notifications.warn("Route not found for this train.");
@@ -596,14 +654,14 @@ async function showTrainInfoDialog(token) {
   const activeEvents = getActiveEvents(allEvents, routeId, worldTime);
 
   // Find the matching trip by routeNum
-  let matchedTrip = normalized.schedule.find(t => t.routeNumbers?.includes(routeNum));
+  let matchedTrip = normalized.schedule.find((t) => t.routeNumbers?.includes(routeNum));
   if (!matchedTrip) matchedTrip = normalized.schedule[0];
   if (!matchedTrip) return;
 
   const path = resolveRouteWithDrawings({ segments: matchedTrip.segments }, worldTime);
   if (!path || path.length < 2) return;
   const directedPath = applyDirection(path, matchedTrip.direction);
-  const { legs, totalJourneySeconds } = buildRouteSegments(directedPath);
+  const { legs } = buildRouteSegments(directedPath);
   if (legs.length === 0) return;
 
   const elapsed = worldTime - departureTime;
@@ -611,7 +669,7 @@ async function showTrainInfoDialog(token) {
 
   const legInfo = findTrainLegInfo(legs, adjustedElapsed);
   const finalStation = legs[legs.length - 1].endStation.station;
-  const isDelayed = activeEvents.some(e => e.type === "delay" && e.target.departureTime === departureTime);
+  const isDelayed = activeEvents.some((e) => e.type === "delay" && e.target.departureTime === departureTime);
 
   // Build status string
   let statusText;
@@ -654,21 +712,27 @@ async function showTrainInfoDialog(token) {
     const depSec = arrSec != null ? arrSec + leg.dwellSeconds : null;
     const isPast = arrSec != null && arrSec <= adjustedElapsed;
     const isCurrent = leg.startStation.station === legInfo.currentStation;
-    const style = isCurrent ? 'font-weight:bold;' : isPast ? 'opacity:0.5;' : '';
-    const marker = isCurrent ? ' ◀' : '';
-    const arrDisplay = li === 0 ? '—' : (arrSec != null ? formatWorldTime(departureTime + arrSec) : '—');
-    const depDisplay = depSec != null ? formatWorldTime(departureTime + depSec) : '—';
-    stationRows.push(`<tr style="${style}"><td>${leg.startStation.station}${marker}</td><td>${arrDisplay}</td><td>${depDisplay}</td></tr>`);
+    const style = isCurrent ? "font-weight:bold;" : isPast ? "opacity:0.5;" : "";
+    const marker = isCurrent ? " ◀" : "";
+    const arrDisplay = li === 0 ? "—" : arrSec != null ? formatWorldTime(departureTime + arrSec) : "—";
+    const depDisplay = depSec != null ? formatWorldTime(departureTime + depSec) : "—";
+    stationRows.push(
+      `<tr style="${style}"><td>${leg.startStation.station}${marker}</td><td>${arrDisplay}</td><td>${depDisplay}</td></tr>`,
+    );
     chatStationRows.push(`<tr><td>${leg.startStation.station}</td><td>${arrDisplay}</td><td>${depDisplay}</td></tr>`);
   }
   // Final station (arrival only, no departure)
   const lastLeg = legs[legs.length - 1];
   const finalArr = findStationArrivalTime(legs, lastLeg.endStation.station);
   const isFinalCurrent = lastLeg.endStation.station === legInfo.currentStation;
-  const finalStyle = isFinalCurrent ? 'font-weight:bold;' : '';
-  const finalMarker = isFinalCurrent ? ' ◀' : '';
-  stationRows.push(`<tr style="${finalStyle}"><td>${lastLeg.endStation.station}${finalMarker}</td><td>${finalArr != null ? formatWorldTime(departureTime + finalArr) : '—'}</td><td>—</td></tr>`);
-  chatStationRows.push(`<tr><td>${lastLeg.endStation.station}</td><td>${finalArr != null ? formatWorldTime(departureTime + finalArr) : '—'}</td><td>—</td></tr>`);
+  const finalStyle = isFinalCurrent ? "font-weight:bold;" : "";
+  const finalMarker = isFinalCurrent ? " ◀" : "";
+  stationRows.push(
+    `<tr style="${finalStyle}"><td>${lastLeg.endStation.station}${finalMarker}</td><td>${finalArr != null ? formatWorldTime(departureTime + finalArr) : "—"}</td><td>—</td></tr>`,
+  );
+  chatStationRows.push(
+    `<tr><td>${lastLeg.endStation.station}</td><td>${finalArr != null ? formatWorldTime(departureTime + finalArr) : "—"}</td><td>—</td></tr>`,
+  );
 
   const scheduleTable = `
     <table style="width:100%;border-collapse:collapse;margin-top:4px;">
@@ -680,7 +744,7 @@ async function showTrainInfoDialog(token) {
     <table style="width:100%;border-collapse:collapse;">
       <tr><td><b>Train</b></td><td>${token.document.name}</td></tr>
       <tr><td><b>Route</b></td><td>${normalized.name || "Unnamed Route"}</td></tr>
-      <tr><td><b>Status</b></td><td>${statusText}${isDelayed ? ' ⏱' : ''}</td></tr>
+      <tr><td><b>Status</b></td><td>${statusText}${isDelayed ? " ⏱" : ""}</td></tr>
       <tr><td><b>Departed</b></td><td>${formatWorldTime(departureTime)}</td></tr>
       ${nextStopHtml}
       ${finalHtml}
@@ -696,7 +760,7 @@ async function showTrainInfoDialog(token) {
     <h3>Train: ${token.document.name}</h3>
     <table style="width:100%;border-collapse:collapse;">
       <tr><td><b>Route</b></td><td>${normalized.name || "Unnamed Route"}</td></tr>
-      <tr><td><b>Status</b></td><td>${statusText}${isDelayed ? ' ⏱' : ''}</td></tr>
+      <tr><td><b>Status</b></td><td>${statusText}${isDelayed ? " ⏱" : ""}</td></tr>
       <tr><td><b>Departed</b></td><td>${formatWorldTime(departureTime)}</td></tr>
       ${nextStopHtml}
       ${finalHtml}
@@ -738,7 +802,7 @@ async function showStationInfoDialog(stationInfo) {
     const normalized = normalizeSchedule(route);
     const actor = game.actors?.get(normalized.actorId);
     const activeEvents = getActiveEvents(allEvents, normalized.id, worldTime);
-    if (activeEvents.some(e => e.type === "closeLine")) continue;
+    if (activeEvents.some((e) => e.type === "closeLine")) continue;
 
     for (const trip of normalized.schedule) {
       const path = resolveRouteWithDrawings({ segments: trip.segments }, worldTime);
@@ -797,7 +861,11 @@ async function showStationInfoDialog(stationInfo) {
       const currentHour = Math.floor(worldTime / 3600);
       const maxHour = Math.floor(forwardLimit / 3600);
 
-      for (let absHour = currentHour; absHour <= maxHour && (upcomingArrivals.length < 10 || upcomingDepartures.length < 10); absHour++) {
+      for (
+        let absHour = currentHour;
+        absHour <= maxHour && (upcomingArrivals.length < 10 || upcomingDepartures.length < 10);
+        absHour++
+      ) {
         const adjustedHour = absHour - offset;
         if (!parsed.hour.match(adjustedHour)) continue;
         for (let minute = 0; minute < 60; minute++) {
@@ -810,9 +878,16 @@ async function showStationInfoDialog(stationInfo) {
           const dir = trip.direction ?? "outbound";
 
           // Arrival entry (skip if station is the origin — train starts here, doesn't "arrive")
-          if (stationArrival > 0 && arrivalWorldTime > worldTime && arrivalWorldTime <= forwardLimit && upcomingArrivals.length < 10) {
+          if (
+            stationArrival > 0 &&
+            arrivalWorldTime > worldTime &&
+            arrivalWorldTime <= forwardLimit &&
+            upcomingArrivals.length < 10
+          ) {
             upcomingArrivals.push({
-              route: routeName, routeNum, direction: dir,
+              route: routeName,
+              routeNum,
+              direction: dir,
               arrivalTime: arrivalWorldTime,
               eta: arrivalWorldTime - worldTime,
             });
@@ -823,7 +898,9 @@ async function showStationInfoDialog(stationInfo) {
             const departWorldTime = depTime + stationArrival + stationDwell;
             if (departWorldTime > worldTime && departWorldTime <= forwardLimit && upcomingDepartures.length < 10) {
               upcomingDepartures.push({
-                route: routeName, routeNum, direction: dir,
+                route: routeName,
+                routeNum,
+                direction: dir,
                 departureTime: departWorldTime,
                 eta: departWorldTime - worldTime,
               });
@@ -845,9 +922,9 @@ async function showStationInfoDialog(stationInfo) {
   if (trainsHere.length === 0) {
     trainsHtml = `<p style="opacity:0.6;">No trains currently at this station.</p>`;
   } else {
-    const rows = trainsHere.map(t =>
-      `<tr><td>${t.name}</td><td>${t.route} #${t.routeNum}</td><td>${t.direction}</td></tr>`
-    ).join("");
+    const rows = trainsHere
+      .map((t) => `<tr><td>${t.name}</td><td>${t.route} #${t.routeNum}</td><td>${t.direction}</td></tr>`)
+      .join("");
     trainsHtml = `
       <table style="width:100%;border-collapse:collapse;">
         <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Train</th><th style="text-align:left;">Route</th><th style="text-align:left;">Dir</th></tr>
@@ -859,9 +936,12 @@ async function showStationInfoDialog(stationInfo) {
   if (upcomingArrivals.length === 0) {
     arrivalsHtml = `<p style="opacity:0.6;">No upcoming arrivals in the next 24 hours.</p>`;
   } else {
-    const rows = upcomingArrivals.map(u =>
-      `<tr><td>${u.route} #${u.routeNum}</td><td>${u.direction}</td><td>${formatWorldTime(u.arrivalTime)}</td><td>${formatDuration(u.eta)}</td></tr>`
-    ).join("");
+    const rows = upcomingArrivals
+      .map(
+        (u) =>
+          `<tr><td>${u.route} #${u.routeNum}</td><td>${u.direction}</td><td>${formatWorldTime(u.arrivalTime)}</td><td>${formatDuration(u.eta)}</td></tr>`,
+      )
+      .join("");
     arrivalsHtml = `
       <table style="width:100%;border-collapse:collapse;">
         <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Route</th><th style="text-align:left;">Dir</th><th style="text-align:left;">Arrives</th><th style="text-align:left;">ETA</th></tr>
@@ -873,9 +953,12 @@ async function showStationInfoDialog(stationInfo) {
   if (upcomingDepartures.length === 0) {
     departuresHtml = `<p style="opacity:0.6;">No upcoming departures in the next 24 hours.</p>`;
   } else {
-    const rows = upcomingDepartures.map(u =>
-      `<tr><td>${u.route} #${u.routeNum}</td><td>${u.direction}</td><td>${formatWorldTime(u.departureTime)}</td><td>${formatDuration(u.eta)}</td></tr>`
-    ).join("");
+    const rows = upcomingDepartures
+      .map(
+        (u) =>
+          `<tr><td>${u.route} #${u.routeNum}</td><td>${u.direction}</td><td>${formatWorldTime(u.departureTime)}</td><td>${formatDuration(u.eta)}</td></tr>`,
+      )
+      .join("");
     departuresHtml = `
       <table style="width:100%;border-collapse:collapse;">
         <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Route</th><th style="text-align:left;">Dir</th><th style="text-align:left;">Departs</th><th style="text-align:left;">ETA</th></tr>
@@ -908,14 +991,14 @@ async function showStationInfoDialog(stationInfo) {
 }
 
 function buildSegmentOptions(selectedId) {
-  const tagged = canvas.drawings?.placeables?.filter(
-    d => d.document.flags?.[MODULE_ID]?.segmentId
-  ) ?? [];
-  return tagged.map(d => {
-    const sid = d.document.flags[MODULE_ID].segmentId;
-    const sel = sid === selectedId ? " selected" : "";
-    return `<option value="${sid}"${sel}>${sid}</option>`;
-  }).join("");
+  const tagged = canvas.drawings?.placeables?.filter((d) => d.document.flags?.[MODULE_ID]?.segmentId) ?? [];
+  return tagged
+    .map((d) => {
+      const sid = d.document.flags[MODULE_ID].segmentId;
+      const sel = sid === selectedId ? " selected" : "";
+      return `<option value="${sid}"${sel}>${sid}</option>`;
+    })
+    .join("");
 }
 
 /** Get station names for a given route by resolving its first trip's segment paths. */
@@ -924,7 +1007,7 @@ function getRouteStationNames(route) {
   const firstTrip = normalized.schedule[0];
   if (!firstTrip?.segments) return [];
   const path = resolveRouteWithDrawings({ segments: firstTrip.segments }, game.time.worldTime);
-  return path.filter(n => n.station).map(n => n.station);
+  return path.filter((n) => n.station).map((n) => n.station);
 }
 
 /** Build departure time options from a route's cron-based schedule, formatted readably. */
@@ -958,7 +1041,7 @@ function buildDepartureOptions(route, selectedTime) {
   }
 
   options.sort((a, b) => a.depTime - b.depTime);
-  return options.map(o => o.html).join("");
+  return options.map((o) => o.html).join("");
 }
 
 // ---------------------------------------------------------------------------
@@ -974,9 +1057,12 @@ const api = {
   /** Delete all managed tokens and recreate them from scratch. Picks up actor prototype changes. */
   async hardRefresh() {
     if (!game.user.isGM || !canvas?.scene) return;
-    const managed = canvas.scene.tokens.filter(t => t.flags?.[MODULE_ID]?.managed);
+    const managed = canvas.scene.tokens.filter((t) => t.flags?.[MODULE_ID]?.managed);
     if (managed.length > 0) {
-      await canvas.scene.deleteEmbeddedDocuments("Token", managed.map(t => t.id));
+      await canvas.scene.deleteEmbeddedDocuments(
+        "Token",
+        managed.map((t) => t.id),
+      );
     }
     _intendedPositions.clear();
     await updateAllTrains(game.time.worldTime);
@@ -988,7 +1074,7 @@ const api = {
     const routes = game.settings.get(MODULE_ID, "routes");
     const events = game.settings.get(MODULE_ID, "events");
     const worldTime = game.time.worldTime;
-    const managed = canvas.scene?.tokens?.filter(t => t.flags?.[MODULE_ID]?.managed) ?? [];
+    const managed = canvas.scene?.tokens?.filter((t) => t.flags?.[MODULE_ID]?.managed) ?? [];
 
     const lines = [`<h3>Rail Network Status</h3>`];
     lines.push(`<b>World Time:</b> ${worldTime} (${formatWorldTime(worldTime)})`);
@@ -999,7 +1085,9 @@ const api = {
     for (const route of routes) {
       const normalized = normalizeSchedule(route);
       const active = getActiveEvents(events, normalized.id, worldTime);
-      const actorName = normalized.actorId ? (game.actors.get(normalized.actorId)?.name ?? "Unknown Actor") : "No actor";
+      const actorName = normalized.actorId
+        ? (game.actors.get(normalized.actorId)?.name ?? "Unknown Actor")
+        : "No actor";
 
       // Show info for each trip
       let tripCount = 0;
@@ -1008,13 +1096,15 @@ const api = {
         if (path.length < 2) continue;
         const directedPath = applyDirection(path, trip.direction);
         const { legs, totalJourneySeconds } = buildRouteSegments(directedPath);
-        const stationNames = legs.map(l => l.startStation.station);
+        const stationNames = legs.map((l) => l.startStation.station);
         stationNames.push(legs[legs.length - 1].endStation.station);
         const desc = describeCronExpression(trip.cron, !!getCalendaria(), getCalendarInfo());
         const routeNums = trip.routeNumbers?.join(", ") || "?";
         const routeLabel = normalized.name || "Unnamed Route";
         if (tripCount === 0) lines.push(`<br><b>${routeLabel}</b> (${actorName}):`);
-        lines.push(`&nbsp;&nbsp;#${routeNums} ${desc} (${(trip.direction ?? "outbound")}): ${stationNames.join(" → ")} [${(totalJourneySeconds / 3600).toFixed(1)}h]`);
+        lines.push(
+          `&nbsp;&nbsp;#${routeNums} ${desc} (${trip.direction ?? "outbound"}): ${stationNames.join(" → ")} [${(totalJourneySeconds / 3600).toFixed(1)}h]`,
+        );
         tripCount++;
       }
 
@@ -1047,7 +1137,7 @@ const api = {
   /** When does the next train leave on the given route? */
   nextDeparture(routeId) {
     const routes = game.settings.get(MODULE_ID, "routes");
-    const route = routes.find(r => r.id === routeId);
+    const route = routes.find((r) => r.id === routeId);
     if (!route) return null;
 
     const normalized = normalizeSchedule(route);
@@ -1093,14 +1183,18 @@ const api = {
   /** Remove an event by ID. */
   async removeEvent(eventId) {
     const events = game.settings.get(MODULE_ID, "events");
-    await game.settings.set(MODULE_ID, "events", events.filter(e => e.id !== eventId));
+    await game.settings.set(
+      MODULE_ID,
+      "events",
+      events.filter((e) => e.id !== eventId),
+    );
     updateAllTrains(game.time.worldTime);
   },
 
   /** List events, optionally filtered by route. */
   listEvents(routeId) {
     const events = game.settings.get(MODULE_ID, "events");
-    if (routeId) return events.filter(e => e.target.routeId === routeId);
+    if (routeId) return events.filter((e) => e.target.routeId === routeId);
     return events;
   },
 
@@ -1108,7 +1202,11 @@ const api = {
   async clearEvents(routeId) {
     if (routeId) {
       const events = game.settings.get(MODULE_ID, "events");
-      await game.settings.set(MODULE_ID, "events", events.filter(e => e.target.routeId !== routeId));
+      await game.settings.set(
+        MODULE_ID,
+        "events",
+        events.filter((e) => e.target.routeId !== routeId),
+      );
     } else {
       await game.settings.set(MODULE_ID, "events", []);
     }
@@ -1118,7 +1216,7 @@ const api = {
   /** Update an existing event by ID. */
   async updateEvent(eventId, event) {
     const events = game.settings.get(MODULE_ID, "events");
-    const idx = events.findIndex(e => e.id === eventId);
+    const idx = events.findIndex((e) => e.id === eventId);
     if (idx === -1) {
       ui.notifications.warn(`Event "${eventId}" not found.`);
       return;
@@ -1169,7 +1267,7 @@ const api = {
     if (!route.id) {
       route.id = foundry.utils.randomID();
     }
-    if (routes.some(r => r.id === route.id)) {
+    if (routes.some((r) => r.id === route.id)) {
       ui.notifications.warn(`Route "${route.name ?? route.id}" already exists.`);
       return;
     }
@@ -1180,7 +1278,7 @@ const api = {
   /** Update an existing route by ID (full replacement). */
   async updateRoute(routeId, route) {
     const routes = game.settings.get(MODULE_ID, "routes");
-    const idx = routes.findIndex(r => r.id === routeId);
+    const idx = routes.findIndex((r) => r.id === routeId);
     if (idx === -1) {
       ui.notifications.warn(`Route "${routeId}" not found.`);
       return;
@@ -1194,9 +1292,17 @@ const api = {
   /** Remove a route and its associated events. */
   async removeRoute(routeId) {
     const routes = game.settings.get(MODULE_ID, "routes");
-    await game.settings.set(MODULE_ID, "routes", routes.filter(r => r.id !== routeId));
+    await game.settings.set(
+      MODULE_ID,
+      "routes",
+      routes.filter((r) => r.id !== routeId),
+    );
     const events = game.settings.get(MODULE_ID, "events");
-    await game.settings.set(MODULE_ID, "events", events.filter(e => e.target.routeId !== routeId));
+    await game.settings.set(
+      MODULE_ID,
+      "events",
+      events.filter((e) => e.target.routeId !== routeId),
+    );
     updateAllTrains(game.time.worldTime);
   },
 
@@ -1226,21 +1332,23 @@ const api = {
       return;
     }
 
-    const existing = eventId
-      ? game.settings.get(MODULE_ID, "events").find(e => e.id === eventId)
-      : null;
+    const existing = eventId ? game.settings.get(MODULE_ID, "events").find((e) => e.id === eventId) : null;
     const isEdit = !!existing;
 
-    const routeOptions = routes.map(r => {
-      const sel = r.id === existing?.target?.routeId ? " selected" : "";
-      return `<option value="${r.id}"${sel}>${r.name ?? r.id}</option>`;
-    }).join("");
+    const routeOptions = routes
+      .map((r) => {
+        const sel = r.id === existing?.target?.routeId ? " selected" : "";
+        return `<option value="${r.id}"${sel}>${r.name ?? r.id}</option>`;
+      })
+      .join("");
 
     const eventTypes = ["closeLine", "blockTrack", "delay", "destroy", "halt", "extraDeparture"];
-    const typeOptions = eventTypes.map(t => {
-      const sel = t === existing?.type ? " selected" : "";
-      return `<option value="${t}"${sel}>${t}</option>`;
-    }).join("");
+    const typeOptions = eventTypes
+      .map((t) => {
+        const sel = t === existing?.type ? " selected" : "";
+        return `<option value="${t}"${sel}>${t}</option>`;
+      })
+      .join("");
 
     const hasCalendaria = game.modules.get("calendaria")?.active;
 
@@ -1250,23 +1358,21 @@ const api = {
     };
 
     // Build station and departure options for the initially selected route
-    const selectedRoute = existing?.target?.routeId
-      ? routes.find(r => r.id === existing.target.routeId)
-      : routes[0];
+    const selectedRoute = existing?.target?.routeId ? routes.find((r) => r.id === existing.target.routeId) : routes[0];
     const stationNames = selectedRoute ? getRouteStationNames(selectedRoute) : [];
-    const stationOptions = stationNames.map(s => {
-      const sel = s === existing?.target?.stationName ? " selected" : "";
-      return `<option value="${s}"${sel}>${s}</option>`;
-    }).join("");
-    const departureOptions = selectedRoute
-      ? buildDepartureOptions(selectedRoute, existing?.target?.departureTime)
-      : "";
+    const stationOptions = stationNames
+      .map((s) => {
+        const sel = s === existing?.target?.stationName ? " selected" : "";
+        return `<option value="${s}"${sel}>${s}</option>`;
+      })
+      .join("");
+    const departureOptions = selectedRoute ? buildDepartureOptions(selectedRoute, existing?.target?.departureTime) : "";
 
     // Which fields are visible per event type
     // stationName: blockTrack, halt, extraDeparture
     // departureTime: delay, destroy, halt
     // delayHours + recoveryRate: delay
-    const selectedType = existing?.type ?? "closeLine";
+    const _selectedType = existing?.type ?? "closeLine";
 
     const content = `
       <style>
@@ -1317,21 +1423,25 @@ const api = {
           <label>Reason</label>
           <input type="text" name="reason" value="${existing?.reason ?? ""}" placeholder="Optional flavor text">
         </div>
-        ${hasCalendaria && !isEdit ? `<div class="form-group">
+        ${
+          hasCalendaria && !isEdit
+            ? `<div class="form-group">
           <label>Create Calendaria Note</label>
           <input type="checkbox" name="calendaria">
-        </div>` : ""}
+        </div>`
+            : ""
+        }
       </form>
     `;
 
     // Field visibility rules per event type
     const fieldVisibility = {
-      closeLine:       { stationName: false, departureTime: false, delayHours: false, recoveryRate: false },
-      blockTrack:      { stationName: true,  departureTime: false, delayHours: false, recoveryRate: false },
-      delay:           { stationName: false, departureTime: true,  delayHours: true,  recoveryRate: true  },
-      destroy:         { stationName: false, departureTime: true,  delayHours: false, recoveryRate: false },
-      halt:            { stationName: true,  departureTime: true,  delayHours: false, recoveryRate: false },
-      extraDeparture:  { stationName: true,  departureTime: false, delayHours: false, recoveryRate: false },
+      closeLine: { stationName: false, departureTime: false, delayHours: false, recoveryRate: false },
+      blockTrack: { stationName: true, departureTime: false, delayHours: false, recoveryRate: false },
+      delay: { stationName: false, departureTime: true, delayHours: true, recoveryRate: true },
+      destroy: { stationName: false, departureTime: true, delayHours: false, recoveryRate: false },
+      halt: { stationName: true, departureTime: true, delayHours: false, recoveryRate: false },
+      extraDeparture: { stationName: true, departureTime: false, delayHours: false, recoveryRate: false },
     };
 
     const result = await foundry.applications.api.DialogV2.wait({
@@ -1352,7 +1462,7 @@ const api = {
         const updateFieldVisibility = () => {
           const type = form.querySelector('select[name="type"]').value;
           const rules = fieldVisibility[type] ?? {};
-          form.querySelectorAll(".rail-event-field").forEach(el => {
+          form.querySelectorAll(".rail-event-field").forEach((el) => {
             const field = el.dataset.field;
             el.classList.toggle("hidden", !(rules[field] ?? false));
           });
@@ -1364,17 +1474,17 @@ const api = {
         // Rebuild station + departure options on route change
         form.querySelector('select[name="routeId"]').addEventListener("change", () => {
           const routeId = form.querySelector('select[name="routeId"]').value;
-          const route = routes.find(r => r.id === routeId);
+          const route = routes.find((r) => r.id === routeId);
           if (!route) return;
 
           const names = getRouteStationNames(route);
           const stationSel = form.querySelector('select[name="stationName"]');
-          stationSel.innerHTML = '<option value="">— select station —</option>' +
-            names.map(s => `<option value="${s}">${s}</option>`).join("");
+          stationSel.innerHTML =
+            '<option value="">— select station —</option>' +
+            names.map((s) => `<option value="${s}">${s}</option>`).join("");
 
           const depSel = form.querySelector('select[name="departureTime"]');
-          depSel.innerHTML = '<option value="">— select departure —</option>' +
-            buildDepartureOptions(route);
+          depSel.innerHTML = '<option value="">— select departure —</option>' + buildDepartureOptions(route);
         });
 
         // Set initial visibility
@@ -1430,7 +1540,7 @@ const api = {
     let rows = "";
     for (const e of events) {
       const routes = game.settings.get(MODULE_ID, "routes");
-      const targetRoute = routes.find(r => r.id === e.target.routeId);
+      const targetRoute = routes.find((r) => r.id === e.target.routeId);
       const target = [targetRoute?.name || e.target.routeId];
       if (e.target.stationName) target.push(e.target.stationName);
       if (e.target.departureTime) target.push(formatWorldTime(e.target.departureTime));
@@ -1482,7 +1592,7 @@ const api = {
         const el = dialog.element;
         if (!el) return;
 
-        el.querySelectorAll(".evt-edit").forEach(btn => {
+        el.querySelectorAll(".evt-edit").forEach((btn) => {
           btn.addEventListener("click", async () => {
             await dialog.close();
             await api.eventEditDialog(btn.dataset.id);
@@ -1490,7 +1600,7 @@ const api = {
           });
         });
 
-        el.querySelectorAll(".evt-delete").forEach(btn => {
+        el.querySelectorAll(".evt-delete").forEach((btn) => {
           btn.addEventListener("click", async () => {
             const confirmed = await foundry.applications.api.DialogV2.confirm({
               window: { title: "Confirm Delete" },
@@ -1522,9 +1632,7 @@ const api = {
 
   /** Tag a Drawing as a track segment with station metadata. */
   async tagSegment(segmentId, stations, drawingId) {
-    const drawing = drawingId
-      ? canvas.scene.drawings.get(drawingId)
-      : canvas.drawings.controlled[0]?.document;
+    const drawing = drawingId ? canvas.scene.drawings.get(drawingId) : canvas.drawings.controlled[0]?.document;
 
     if (!drawing) {
       ui.notifications.warn("No Drawing selected or found.");
@@ -1539,9 +1647,7 @@ const api = {
 
   /** Edit an existing segment's station configuration. */
   async editSegment(segmentId) {
-    const drawing = canvas.drawings?.placeables?.find(
-      d => d.document.flags?.[MODULE_ID]?.segmentId === segmentId
-    );
+    const drawing = canvas.drawings?.placeables?.find((d) => d.document.flags?.[MODULE_ID]?.segmentId === segmentId);
     if (!drawing) {
       ui.notifications.warn(`Segment "${segmentId}" not found on this scene.`);
       return;
@@ -1563,7 +1669,7 @@ const api = {
     const numPoints = points.length / 2;
     const existingFlags = doc.flags?.[MODULE_ID] ?? {};
     const existingStations = existingFlags.stations ?? [];
-    const stationMap = new Map(existingStations.map(s => [s.pointIndex, s]));
+    const stationMap = new Map(existingStations.map((s) => [s.pointIndex, s]));
 
     // Pre-compute absolute positions for each point
     const absPoints = [];
@@ -1622,7 +1728,8 @@ const api = {
       position: { width: 700, height: 600, top: 50, left: 100 },
       render: (event, dialog) => {
         const el = dialog.element ?? dialog;
-        const scrollEl = el.querySelector?.(".window-content") ?? el.closest?.(".application")?.querySelector(".window-content");
+        const scrollEl =
+          el.querySelector?.(".window-content") ?? el.closest?.(".application")?.querySelector(".window-content");
         if (scrollEl) {
           scrollEl.style.overflowY = "auto";
           scrollEl.scrollTop = 0;
@@ -1632,7 +1739,7 @@ const api = {
 
         // Highlight point on map when hovering a row
         let highlightGraphic = null;
-        root.querySelectorAll("tbody tr").forEach(row => {
+        root.querySelectorAll("tbody tr").forEach((row) => {
           row.addEventListener("mouseenter", () => {
             const px = Number(row.dataset.pointX);
             const py = Number(row.dataset.pointY);
@@ -1694,7 +1801,7 @@ const api = {
   /** Open a dialog to create or edit a route. */
   async routeEditDialog(routeId) {
     const routes = game.settings.get(MODULE_ID, "routes");
-    const existing = routeId ? routes.find(r => r.id === routeId) : null;
+    const existing = routeId ? routes.find((r) => r.id === routeId) : null;
     const isEdit = !!existing;
     const hasCalendaria = !!game.modules.get("calendaria")?.active;
 
@@ -1708,7 +1815,9 @@ const api = {
       try {
         const path = resolveRouteWithDrawings({ segments }, game.time.worldTime);
         return getPathCompassLabels(path);
-      } catch { return null; }
+      } catch {
+        return null;
+      }
     }
 
     const defaultLabels = { outbound: "Outbound", return: "Return", roundtrip: "Round trip" };
@@ -1720,14 +1829,16 @@ const api = {
       const minute = parts[0] ?? "0";
       const hour = parts[1] ?? "6";
       const compass = getCompassOpts(trip.segments) ?? defaultLabels;
-      const dirOpts = ["outbound", "return", "roundtrip"].map(d => {
-        const label = compass[d] ?? defaultLabels[d];
-        const sel = (trip.direction ?? "outbound") === d ? " selected" : "";
-        return `<option value="${d}"${sel}>${label}</option>`;
-      }).join("");
+      const dirOpts = ["outbound", "return", "roundtrip"]
+        .map((d) => {
+          const label = compass[d] ?? defaultLabels[d];
+          const sel = (trip.direction ?? "outbound") === d ? " selected" : "";
+          return `<option value="${d}"${sel}>${label}</option>`;
+        })
+        .join("");
 
       // Calendaria fields or offset
-      let extraFields = "";
+      let extraFields;
       if (hasCalendaria) {
         const day = parts[2] ?? "*";
         const month = parts[3] ?? "*";
@@ -1799,10 +1910,12 @@ const api = {
           <label>Actor</label>
           <select name="actorId" style="width:100%;">
             <option value="">-- Select Actor --</option>
-            ${game.actors.map(a => {
-              const sel = a.id === existing?.actorId ? " selected" : "";
-              return `<option value="${a.id}"${sel}>${a.name}</option>`;
-            }).join("")}
+            ${game.actors
+              .map((a) => {
+                const sel = a.id === existing?.actorId ? " selected" : "";
+                return `<option value="${a.id}"${sel}>${a.name}</option>`;
+              })
+              .join("")}
           </select>
         </div>
         <div class="form-group rail-actor-drop-zone"
@@ -1846,10 +1959,14 @@ const api = {
               <tr><td style="padding:2px 8px 2px 0;">Min <code>0</code>, Hour <code>*/12</code></td><td>Every 12 hours</td></tr>
               <tr><td style="padding:2px 8px 2px 0;">Min <code>0</code>, Hour <code>6/48</code></td><td>At 06:00 every 2 days</td></tr>
               <tr><td style="padding:2px 8px 2px 0;">Min <code>0</code>, Hour <code>6/48</code>, Offset <code>24</code></td><td>At 06:00 every 2 days, shifted by 1 day</td></tr>
-              ${hasCalendaria ? `
+              ${
+                hasCalendaria
+                  ? `
               <tr><td style="padding:2px 8px 2px 0;">Hour <code>6</code>, Weekday <code>1,3,5</code></td><td>At 06:00 on weekdays 1, 3, and 5</td></tr>
               <tr><td style="padding:2px 8px 2px 0;">Hour <code>6</code>, Day <code>1</code></td><td>At 06:00 on the 1st of every month</td></tr>
-              ` : ""}
+              `
+                  : ""
+              }
             </table>
           </details>
         </div>
@@ -1862,7 +1979,9 @@ const api = {
 
     const result = await foundry.applications.api.DialogV2.wait({
       id: "rail-network-route-edit",
-      window: { title: isEdit ? `Rail Network — Edit Route: ${existing?.name || routeId}` : "Rail Network — New Route" },
+      window: {
+        title: isEdit ? `Rail Network — Edit Route: ${existing?.name || routeId}` : "Rail Network — New Route",
+      },
       content,
       position: { width: 620, top: 50, left: 200 },
       render: (event, dialog) => {
@@ -1913,7 +2032,9 @@ const api = {
             if (!actor) return;
             actorSelect.value = actor.id;
             updateActorPreview(actor.id);
-          } catch { /* not valid drag data */ }
+          } catch {
+            /* not valid drag data */
+          }
         });
 
         // Update cron description live when fields change
@@ -1940,7 +2061,7 @@ const api = {
         const updateDirLabels = (tripBlock) => {
           const idx = tripBlock.dataset.trip;
           const segSelects = tripBlock.querySelectorAll(`[name^="trip_${idx}_seg_"]`);
-          const segments = [...segSelects].map(sel => ({ segmentId: sel.value })).filter(s => s.segmentId);
+          const segments = [...segSelects].map((sel) => ({ segmentId: sel.value })).filter((s) => s.segmentId);
           const compass = getCompassOpts(segments) ?? defaultLabels;
           const dirSelect = tripBlock.querySelector(`[name="trip_${idx}_dir"]`);
           if (dirSelect) {
@@ -1968,13 +2089,6 @@ const api = {
           const container = form.querySelector(".trips-container");
           const idx = nextTripIdx++;
           // Copy segments from the first trip if available
-          const firstBlock = container.querySelector(".trip-block");
-          const defaultSegs = [];
-          if (firstBlock) {
-            firstBlock.querySelectorAll("[name^='trip_'][name$='_seg_']").forEach(sel => {
-              // Can't easily copy, so just use first trip's segments
-            });
-          }
           const defaultTrip = {
             cron: "0 6",
             routeNumbers: [],
@@ -2063,7 +2177,7 @@ const api = {
 
       schedule.push({
         cron,
-        routeNumbers: (routeNum != null && routeNum !== "") ? [routeNum] : [],
+        routeNumbers: routeNum != null && routeNum !== "" ? [routeNum] : [],
         direction,
         segments,
       });
@@ -2097,19 +2211,23 @@ const api = {
     for (const r of routes) {
       const normalized = normalizeSchedule(r);
       const tripCount = normalized.schedule.length;
-      const schedSummary = normalized.schedule.map(t => {
-        const desc = describeCronExpression(t.cron, !!getCalendaria(), getCalendarInfo());
-        let dirLabel;
-        try {
-          const path = resolveRouteWithDrawings({ segments: t.segments }, game.time.worldTime);
-          const compass = getPathCompassLabels(path);
-          dirLabel = compass?.[t.direction ?? "outbound"];
-        } catch { /* ignore */ }
-        if (!dirLabel) {
-          dirLabel = t.direction === "return" ? "Return" : t.direction === "roundtrip" ? "Round trip" : "Outbound";
-        }
-        return `${dirLabel} ${desc}`;
-      }).join("; ");
+      const schedSummary = normalized.schedule
+        .map((t) => {
+          const desc = describeCronExpression(t.cron, !!getCalendaria(), getCalendarInfo());
+          let dirLabel;
+          try {
+            const path = resolveRouteWithDrawings({ segments: t.segments }, game.time.worldTime);
+            const compass = getPathCompassLabels(path);
+            dirLabel = compass?.[t.direction ?? "outbound"];
+          } catch {
+            /* ignore */
+          }
+          if (!dirLabel) {
+            dirLabel = t.direction === "return" ? "Return" : t.direction === "roundtrip" ? "Round trip" : "Outbound";
+          }
+          return `${dirLabel} ${desc}`;
+        })
+        .join("; ");
       rows += `
         <tr>
           <td>${r.name || "Unnamed Route"}</td>
@@ -2151,7 +2269,7 @@ const api = {
         const el = dialog.element;
         if (!el) return;
 
-        el.querySelectorAll(".route-edit").forEach(btn => {
+        el.querySelectorAll(".route-edit").forEach((btn) => {
           btn.addEventListener("click", async () => {
             await dialog.close();
             await api.routeEditDialog(btn.dataset.id);
@@ -2159,7 +2277,7 @@ const api = {
           });
         });
 
-        el.querySelectorAll(".route-delete").forEach(btn => {
+        el.querySelectorAll(".route-delete").forEach((btn) => {
           btn.addEventListener("click", async () => {
             const confirmed = await foundry.applications.api.DialogV2.confirm({
               window: { title: "Confirm Delete" },
@@ -2192,12 +2310,36 @@ const api = {
   /** Create hotbar macros in the Macro Directory. */
   async installMacros() {
     const macros = [
-      { name: "Rail: Manage Routes", command: `game.modules.get("${MODULE_ID}").api.routeListDialog()`, img: "fa-solid fa-map-signs" },
-      { name: "Rail: Tag Segment", command: `game.modules.get("${MODULE_ID}").api.setupDialog()`, img: "fa-solid fa-route" },
-      { name: "Rail: Edit Segment", command: `game.modules.get("${MODULE_ID}").api.editSegment()`, img: "fa-solid fa-pen" },
-      { name: "Rail: Route Status", command: `game.modules.get("${MODULE_ID}").api.status()`, img: "fa-solid fa-clipboard-list" },
-      { name: "Rail: Event Manager", command: `game.modules.get("${MODULE_ID}").api.eventListDialog()`, img: "fa-solid fa-calendar-exclamation" },
-      { name: "Rail: Refresh Trains", command: `game.modules.get("${MODULE_ID}").api.hardRefresh()`, img: "fa-solid fa-train" },
+      {
+        name: "Rail: Manage Routes",
+        command: `game.modules.get("${MODULE_ID}").api.routeListDialog()`,
+        img: "fa-solid fa-map-signs",
+      },
+      {
+        name: "Rail: Tag Segment",
+        command: `game.modules.get("${MODULE_ID}").api.setupDialog()`,
+        img: "fa-solid fa-route",
+      },
+      {
+        name: "Rail: Edit Segment",
+        command: `game.modules.get("${MODULE_ID}").api.editSegment()`,
+        img: "fa-solid fa-pen",
+      },
+      {
+        name: "Rail: Route Status",
+        command: `game.modules.get("${MODULE_ID}").api.status()`,
+        img: "fa-solid fa-clipboard-list",
+      },
+      {
+        name: "Rail: Event Manager",
+        command: `game.modules.get("${MODULE_ID}").api.eventListDialog()`,
+        img: "fa-solid fa-calendar-exclamation",
+      },
+      {
+        name: "Rail: Refresh Trains",
+        command: `game.modules.get("${MODULE_ID}").api.hardRefresh()`,
+        img: "fa-solid fa-train",
+      },
     ];
     for (const m of macros) {
       await Macro.create({ name: m.name, type: "script", command: m.command, img: "icons/svg/lightning.svg" });
@@ -2229,7 +2371,7 @@ Hooks.once("ready", () => {
   Hooks.callAll(`${MODULE_ID}.ready`, api);
 });
 
-Hooks.on("updateWorldTime", (worldTime, dt, options, userId) => {
+Hooks.on("updateWorldTime", (worldTime, _dt, _options, _userId) => {
   updateAllTrains(worldTime);
 });
 
@@ -2241,11 +2383,17 @@ Hooks.on("canvasReady", () => {
   // Tag Segment tool: click a drawing on canvas to open the Tag Segment dialog.
   // Remove prior listener to avoid duplicates on scene change.
   // Tag Segment: find drawing under cursor
-  const findDrawingAtPos = (pos) => canvas.drawings?.placeables?.find(d => {
-    const bounds = d.bounds;
-    return bounds && pos.x >= bounds.x && pos.x <= bounds.x + bounds.width
-                  && pos.y >= bounds.y && pos.y <= bounds.y + bounds.height;
-  });
+  const findDrawingAtPos = (pos) =>
+    canvas.drawings?.placeables?.find((d) => {
+      const bounds = d.bounds;
+      return (
+        bounds &&
+        pos.x >= bounds.x &&
+        pos.x <= bounds.x + bounds.width &&
+        pos.y >= bounds.y &&
+        pos.y <= bounds.y + bounds.height
+      );
+    });
 
   const isTagSegmentActive = () =>
     game.user.isGM && ui.controls?.activeControl === MODULE_ID && ui.controls?.activeTool === "tag-segment";
@@ -2293,7 +2441,11 @@ Hooks.on("canvasReady", () => {
 
     const g = new PIXI.Graphics();
     // Glow layers (wide, transparent → narrow, opaque)
-    for (const { width, alpha } of [{ width: 12, alpha: 0.1 }, { width: 8, alpha: 0.2 }, { width: 5, alpha: 0.3 }]) {
+    for (const { width, alpha } of [
+      { width: 12, alpha: 0.1 },
+      { width: 8, alpha: 0.2 },
+      { width: 5, alpha: 0.3 },
+    ]) {
       g.lineStyle(width, 0xffcc00, alpha);
       g.moveTo(doc.x + points[0], doc.y + points[1]);
       for (let i = 2; i < points.length; i += 2) g.lineTo(doc.x + points[i], doc.y + points[i + 1]);
@@ -2357,7 +2509,11 @@ Hooks.on("canvasReady", () => {
       _statusHoveredTarget = { type: "train", ref: token };
       const b = token.bounds;
       const g = new PIXI.Graphics();
-      for (const { width, alpha } of [{ width: 12, alpha: 0.1 }, { width: 8, alpha: 0.2 }, { width: 5, alpha: 0.3 }]) {
+      for (const { width, alpha } of [
+        { width: 12, alpha: 0.1 },
+        { width: 8, alpha: 0.2 },
+        { width: 5, alpha: 0.3 },
+      ]) {
         g.lineStyle(width, 0xffcc00, alpha);
         g.drawRect(b.x, b.y, b.width, b.height);
       }
@@ -2371,8 +2527,13 @@ Hooks.on("canvasReady", () => {
     // Check stations
     const station = findStationAtPos(pos);
     if (station) {
-      if (_statusHoveredTarget?.type === "station" && _statusHoveredTarget.ref?.stationName === station.stationName
-          && _statusHoveredTarget.ref?.x === station.x && _statusHoveredTarget.ref?.y === station.y) return;
+      if (
+        _statusHoveredTarget?.type === "station" &&
+        _statusHoveredTarget.ref?.stationName === station.stationName &&
+        _statusHoveredTarget.ref?.x === station.x &&
+        _statusHoveredTarget.ref?.y === station.y
+      )
+        return;
       clearStatusHighlight();
       _statusHoveredTarget = { type: "station", ref: station };
       const g = new PIXI.Graphics();
@@ -2412,7 +2573,7 @@ Hooks.on("createDrawing", (drawing, options, userId) => {
   }
 });
 
-Hooks.on("updateDrawing", (drawing, change, options, userId) => {
+Hooks.on("updateDrawing", (drawing, _change, _options, _userId) => {
   const sid = drawing.flags?.[MODULE_ID]?.segmentId;
   if (sid) {
     invalidateCache(sid);
@@ -2420,7 +2581,7 @@ Hooks.on("updateDrawing", (drawing, change, options, userId) => {
   }
 });
 
-Hooks.on("deleteDrawing", (drawing, options, userId) => {
+Hooks.on("deleteDrawing", (drawing, _options, _userId) => {
   const sid = drawing.flags?.[MODULE_ID]?.segmentId;
   if (sid) {
     invalidateCache(sid);
@@ -2429,23 +2590,20 @@ Hooks.on("deleteDrawing", (drawing, options, userId) => {
 });
 
 // Handle Draw Track tool activation/deactivation
-Hooks.on("renderSceneControls", (app, element, data) => {
-  const change = data.activationChange;
-  if (!change) return;
+Hooks.on("activateSceneControls", (app, change) => {
+  if (!change.controlChange && !change.toolChange) return;
 
   // When Draw Track tool is selected, switch to polygon drawing mode
-  if (change.controlChange || change.toolChange) {
-    const isDrawTrack = ui.controls?.activeControl === MODULE_ID && ui.controls?.activeTool === "draw-track";
-    if (isDrawTrack && !_awaitingDrawTrack) {
-      _awaitingDrawTrack = true;
-      ui.controls.render({ control: "drawings", tool: "polygon" });
-      return;
-    }
-    // Clear flag when user switches away from drawings polygon tool
-    if (_awaitingDrawTrack) {
-      const isDrawingPolygon = ui.controls?.activeControl === "drawings" && ui.controls?.activeTool === "polygon";
-      if (!isDrawingPolygon) _awaitingDrawTrack = false;
-    }
+  const isDrawTrack = ui.controls?.activeControl === MODULE_ID && ui.controls?.activeTool === "draw-track";
+  if (isDrawTrack && !_awaitingDrawTrack) {
+    _awaitingDrawTrack = true;
+    ui.controls.render({ control: "drawings", tool: "polygon" });
+    return;
+  }
+  // Clear flag when user switches away from drawings polygon tool
+  if (_awaitingDrawTrack) {
+    const isDrawingPolygon = ui.controls?.activeControl === "drawings" && ui.controls?.activeTool === "polygon";
+    if (!isDrawingPolygon) _awaitingDrawTrack = false;
   }
 });
 

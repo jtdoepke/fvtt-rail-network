@@ -1,0 +1,4 @@
+fvtt_source/
+node_modules/
+dist/
+package-lock.json
