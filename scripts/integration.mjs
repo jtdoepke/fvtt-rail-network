@@ -536,13 +536,14 @@ const api = {
         stationNames.push(legs[legs.length - 1].endStation.station);
         const desc = describeCronExpression(trip.cron, false);
         const routeNums = trip.routeNumbers?.join(", ") || "?";
-        if (tripCount === 0) lines.push(`<br><b>${normalized.id}</b> (${actorName}):`);
+        const routeLabel = normalized.name || "Unnamed Route";
+        if (tripCount === 0) lines.push(`<br><b>${routeLabel}</b> (${actorName}):`);
         lines.push(`&nbsp;&nbsp;#${routeNums} ${desc} (${(trip.direction ?? "outbound")}): ${stationNames.join(" → ")} [${(totalJourneySeconds / 3600).toFixed(1)}h]`);
         tripCount++;
       }
 
       if (tripCount === 0) {
-        lines.push(`<br><b>${normalized.id}</b> (${actorName}): No active path`);
+        lines.push(`<br><b>${normalized.name || "Unnamed Route"}</b> (${actorName}): No active path`);
         continue;
       }
 
@@ -655,11 +656,10 @@ const api = {
   async addRoute(route) {
     const routes = game.settings.get(MODULE_ID, "routes");
     if (!route.id) {
-      ui.notifications.warn("Route ID is required.");
-      return;
+      route.id = foundry.utils.randomID();
     }
     if (routes.some(r => r.id === route.id)) {
-      ui.notifications.warn(`Route "${route.id}" already exists.`);
+      ui.notifications.warn(`Route "${route.name ?? route.id}" already exists.`);
       return;
     }
     await game.settings.set(MODULE_ID, "routes", [...routes, route]);
@@ -722,7 +722,7 @@ const api = {
 
     const routeOptions = routes.map(r => {
       const sel = r.id === existing?.target?.routeId ? " selected" : "";
-      return `<option value="${r.id}"${sel}>${r.id}</option>`;
+      return `<option value="${r.id}"${sel}>${r.name ?? r.id}</option>`;
     }).join("");
 
     const eventTypes = ["closeLine", "blockTrack", "delay", "destroy", "halt", "extraDeparture"];
@@ -918,7 +918,9 @@ const api = {
 
     let rows = "";
     for (const e of events) {
-      const target = [e.target.routeId];
+      const routes = game.settings.get(MODULE_ID, "routes");
+      const targetRoute = routes.find(r => r.id === e.target.routeId);
+      const target = [targetRoute?.name || e.target.routeId];
       if (e.target.stationName) target.push(e.target.stationName);
       if (e.target.departureTime) target.push(formatWorldTime(e.target.departureTime));
       const details = [];
@@ -1276,9 +1278,10 @@ const api = {
 
     const content = `
       <form>
+        <input type="hidden" name="id" value="${existing?.id ?? ""}">
         <div class="form-group">
-          <label>Route ID</label>
-          <input type="text" name="id" value="${existing?.id ?? ""}" ${isEdit ? "readonly" : ""} required>
+          <label>Route Name</label>
+          <input type="text" name="name" value="${existing?.name ?? ""}" required>
         </div>
         <h3 style="border-bottom:1px solid var(--color-border-light);padding-bottom:4px;">Train Actor</h3>
         <div class="form-group">
@@ -1348,7 +1351,7 @@ const api = {
 
     const result = await foundry.applications.api.DialogV2.wait({
       id: "rail-network-route-edit",
-      window: { title: isEdit ? `Rail Network — Edit Route: ${routeId}` : "Rail Network — New Route" },
+      window: { title: isEdit ? `Rail Network — Edit Route: ${existing?.name || routeId}` : "Rail Network — New Route" },
       content,
       position: { width: 620, top: 50, left: 200 },
       render: (event, dialog) => {
@@ -1556,7 +1559,8 @@ const api = {
     }
 
     const route = {
-      id: result.id,
+      id: result.id || foundry.utils.randomID(),
+      name: result.name,
       actorId: result.actorId || undefined,
       nameTemplate: result.nameTemplate || "[[name]] [[routeNum]]",
       schedule,
@@ -1567,10 +1571,10 @@ const api = {
 
     if (isEdit) {
       await api.updateRoute(routeId, route);
-      ui.notifications.info(`Route "${routeId}" updated.`);
+      ui.notifications.info(`Route "${route.name}" updated.`);
     } else {
       await api.addRoute(route);
-      ui.notifications.info(`Route "${route.id}" created.`);
+      ui.notifications.info(`Route "${route.name}" created.`);
     }
   },
 
@@ -1597,26 +1601,26 @@ const api = {
       }).join("; ");
       rows += `
         <tr>
-          <td>${r.id}</td>
+          <td>${r.name || "Unnamed Route"}</td>
           <td>${r.actorId ? (game.actors.get(r.actorId)?.name ?? "Unknown Actor") : "No actor"}</td>
           <td>${tripCount}</td>
           <td>${schedSummary || "—"}</td>
           <td style="white-space:nowrap;">
             <button type="button" class="route-edit" data-id="${r.id}">Edit</button>
-            <button type="button" class="route-delete" data-id="${r.id}">Delete</button>
+            <button type="button" class="route-delete" data-id="${r.id}" data-name="${r.name || ""}">Delete</button>
           </td>
         </tr>`;
     }
 
     if (routes.length === 0) {
-      rows = `<tr><td colspan="5" style="text-align:center;font-style:italic;">No routes configured.</td></tr>`;
+      rows = `<tr><td colspan="5" style="text-align:center;font-style:italic;">No routes configured. Create an Actor to represent your train first, then add a route.</td></tr>`;
     }
 
     const content = `
       <table style="width:100%;border-collapse:collapse;">
         <thead>
           <tr style="border-bottom:1px solid var(--color-border-light);">
-            <th style="text-align:left;">Route ID</th>
+            <th style="text-align:left;">Route</th>
             <th style="text-align:left;">Actor</th>
             <th>Trips</th>
             <th style="text-align:left;">Schedule</th>
@@ -1648,12 +1652,12 @@ const api = {
           btn.addEventListener("click", async () => {
             const confirmed = await foundry.applications.api.DialogV2.confirm({
               window: { title: "Confirm Delete" },
-              content: `<p>Delete route <b>${btn.dataset.id}</b> and all its events?</p>`,
+              content: `<p>Delete route <b>${btn.dataset.name || btn.dataset.id}</b> and all its events?</p>`,
             });
             if (!confirmed) return;
             await dialog.close();
             await api.removeRoute(btn.dataset.id);
-            ui.notifications.info(`Route "${btn.dataset.id}" deleted.`);
+            ui.notifications.info(`Route "${btn.dataset.name || btn.dataset.id}" deleted.`);
             api.routeListDialog();
           });
         });

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-04-05
+
+### Changed
+- Route ID is now auto-generated; routes are identified by a user-facing name instead
+
 ## [0.0.8] - 2026-04-05
 
 ### Changed
@@ -116,7 +121,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional Sequencer and Calendaria module integration
 - GitHub Actions release workflow
 
-[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.8...HEAD
+[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.9...HEAD
+[0.0.9]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.5...v0.0.6
