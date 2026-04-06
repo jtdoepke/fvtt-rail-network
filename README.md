@@ -10,6 +10,7 @@ A [Foundry VTT](https://foundryvtt.com/) module that animates train tokens along
 - **Actor-based tokens** — Train tokens are created from Actor documents. Any actor can represent a train, with configurable name templates.
 - **Cron-based schedules** — Flexible departure schedules using cron expressions, with per-trip direction (outbound, return, round trip) and segment paths.
 - **Route chaining** — Combine multiple track segments into a single route with automatic closest-endpoint matching and T-junction support.
+- **Wandering routes** — Optional route type where trains randomly choose their next destination based on weighted station probabilities. Uses deterministic seeded randomness, so the same departure always follows the same path. Supports A\* pathfinding through complex networks.
 - **Event system** — Delay trains, block tracks, close lines, destroy or halt specific departures, and inject extra unscheduled departures.
 - **Interactive tools** — Draw Track tool for creating segments, Status tool for clicking trains and stations to view info popups, Tag Segment tool for configuring stations.
 - **GM API** — Full scripting interface at `game.railNetwork` for managing routes, events, and tokens. See [API.md](API.md).
@@ -103,7 +104,22 @@ Routes are stored in the `rail-network.routes` world setting:
 | `name`         | Display name for the route                                                                            |
 | `actorId`      | Actor document ID used to create train tokens                                                         |
 | `nameTemplate` | Token name template (e.g., `[[name]] [[routeNum]]`; supports `[[name]]`, `[[actor]]`, `[[routeNum]]`) |
+| `type`         | `"wander"` for wandering routes (omit for fixed routes)                                               |
+| `network`      | Network config for wandering routes (see below)                                                       |
 | `schedule`     | Array of trip objects (see below)                                                                     |
+
+#### Wandering Route Network Config
+
+For routes with `type: "wander"`, the `network` object defines the graph:
+
+| Field          | Description                                                                           |
+| -------------- | ------------------------------------------------------------------------------------- |
+| `startStation` | Station name where trains begin their journey                                         |
+| `segments`     | Array of segment IDs forming the network graph                                        |
+| `maxHours`     | Maximum journey duration in hours (0 = indefinite)                                    |
+| `weights`      | Object mapping station names to positive weights (e.g., `{ "Sharn": 3, "Wroat": 1 }`) |
+
+Trains choose their next destination from stations listed in `weights` (excluding their current station), with probability proportional to the weight. The engine uses A\* pathfinding to route through intermediate stations. Stations not in `weights` are never chosen as destinations but may be traversed en route.
 
 Each trip in the `schedule` array:
 

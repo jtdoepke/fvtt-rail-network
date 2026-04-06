@@ -20,6 +20,7 @@ import {
   findStationArrivalTime,
   convertSpeedToPixelsPerHour,
   pixelDistanceToWorldDistance,
+  computeWanderingWalk,
 } from "./engine.mjs";
 
 const MODULE_ID = "rail-network";
@@ -30,6 +31,9 @@ const MODULE_ID = "rail-network";
 
 /** @type {Map<string, Array>} segmentId → path array */
 const _pathCache = new Map();
+
+/** @type {Map<string, {legs, totalJourneySeconds}>} "routeId::departureTime" → walk result */
+const _wanderWalkCache = new Map();
 
 /** @type {Map<string, {x: number, y: number}>} tokenId → intended position */
 const _intendedPositions = new Map();
@@ -92,6 +96,8 @@ async function setDelayedStatus(tokenDoc, active) {
 function invalidateCache(segmentId) {
   if (segmentId) _pathCache.delete(segmentId);
   else _pathCache.clear();
+  // Wandering walk cache depends on segment paths, so always clear it
+  _wanderWalkCache.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +257,8 @@ async function updateAllTrains(worldTime) {
         continue;
       }
 
+      const isWander = normalized.type === "wander";
+
       // Resolve paths per trip, find max journey time
       const tripCache = new Map();
       const resolveTrip = (segments, direction) => {
@@ -271,34 +279,76 @@ async function updateAllTrains(worldTime) {
         return result;
       };
 
+      // Single-segment resolver for wandering routes (uses Drawing cache)
+      const singleSegResolver = (segmentId) => {
+        if (_pathCache.has(segmentId)) return _pathCache.get(segmentId);
+        const drawing = canvas.drawings?.placeables?.find(
+          (d) => d.document.flags?.[MODULE_ID]?.segmentId === segmentId,
+        );
+        if (drawing) {
+          const path = drawingToPath(drawing.document);
+          _pathCache.set(segmentId, path);
+          return path;
+        }
+        return null;
+      };
+
       let maxJourneySeconds = 24 * 3600;
-      for (const trip of normalized.schedule) {
-        const resolved = resolveTrip(trip.segments, trip.direction);
-        if (resolved) maxJourneySeconds = Math.max(maxJourneySeconds, resolved.totalJourneySeconds);
+      if (isWander && normalized.network?.maxHours > 0) {
+        maxJourneySeconds = normalized.network.maxHours * 3600;
+      } else if (!isWander) {
+        for (const trip of normalized.schedule) {
+          const resolved = resolveTrip(trip.segments, trip.direction);
+          if (resolved) maxJourneySeconds = Math.max(maxJourneySeconds, resolved.totalJourneySeconds);
+        }
       }
 
       const scheduled = findAllActiveDepartures(worldTime, normalized.schedule, maxJourneySeconds, calendarDecomposer);
 
-      // Extra departures use first trip's path
-      const firstTrip = normalized.schedule[0];
-      const defaultResolved = firstTrip ? resolveTrip(firstTrip.segments, firstTrip.direction) : null;
-      const extras = defaultResolved
-        ? findExtraDepartures(activeEvents, worldTime, defaultResolved.legs).map((dep) => ({
-            ...dep,
-            routeNum: "X",
-            direction: firstTrip.direction,
-            segments: firstTrip.segments,
-          }))
-        : [];
+      // Extra departures use first trip's path (fixed routes only)
+      let extras = [];
+      if (!isWander) {
+        const firstTrip = normalized.schedule[0];
+        const defaultResolved = firstTrip ? resolveTrip(firstTrip.segments, firstTrip.direction) : null;
+        extras = defaultResolved
+          ? findExtraDepartures(activeEvents, worldTime, defaultResolved.legs).map((dep) => ({
+              ...dep,
+              routeNum: "X",
+              direction: firstTrip.direction,
+              segments: firstTrip.segments,
+            }))
+          : [];
+      }
 
       const allDepartures = [...scheduled, ...extras];
       const nameTemplate = normalized.nameTemplate ?? "[[name]] [[routeNum]]";
 
       for (const dep of allDepartures) {
-        const resolved = resolveTrip(dep.segments, dep.direction);
-        if (!resolved) continue;
+        let legs, totalJourneySeconds;
 
-        const { legs, totalJourneySeconds } = resolved;
+        if (isWander) {
+          // Wandering route: compute walk per departure (unique seed)
+          const wanderKey = `${normalized.id}::${dep.departureTime}`;
+          let walkResult = _wanderWalkCache.get(wanderKey);
+          if (!walkResult) {
+            walkResult = computeWanderingWalk(
+              normalized.network,
+              dep.departureTime,
+              normalized.id,
+              singleSegResolver,
+              getPixelsPerHour(normalized),
+            );
+            _wanderWalkCache.set(wanderKey, walkResult);
+          }
+          if (!walkResult || walkResult.legs.length === 0) continue;
+          legs = walkResult.legs;
+          totalJourneySeconds = walkResult.totalJourneySeconds;
+        } else {
+          const resolved = resolveTrip(dep.segments, dep.direction);
+          if (!resolved) continue;
+          legs = resolved.legs;
+          totalJourneySeconds = resolved.totalJourneySeconds;
+        }
         const { skip, adjustedElapsed } = applyEvents(activeEvents, dep.departureTime, dep.elapsed, legs, worldTime);
 
         if (skip) {
@@ -1986,12 +2036,93 @@ const api = {
       ? `Fields: minute, hour, day-of-month, month, day-of-week — matched against the active Calendaria calendar.`
       : `Fields: minute, hour, offset — hour counts from the start of the world clock.`;
 
+    // Wandering route state
+    const isWander = existing?.type === "wander";
+    const networkConfig = existing?.network ?? {};
+
+    // Build network segment checkboxes and station weights for wander mode
+    function buildNetworkSection() {
+      const allSegIds = (canvas.drawings?.placeables ?? [])
+        .map((d) => d.document.flags?.[MODULE_ID]?.segmentId)
+        .filter(Boolean)
+        .sort();
+      const selectedSegs = networkConfig.segments ?? [];
+
+      let segCheckboxes = "";
+      for (const segId of allSegIds) {
+        const checked = selectedSegs.includes(segId) ? " checked" : "";
+        segCheckboxes += `<label style="display:block;margin:2px 0;"><input type="checkbox" name="network_seg_${segId}" value="${segId}"${checked}> ${segId}</label>`;
+      }
+
+      // Discover all stations from selected segments
+      const stationNames = new Set();
+      for (const segId of selectedSegs) {
+        const drawing = canvas.drawings?.placeables?.find((d) => d.document.flags?.[MODULE_ID]?.segmentId === segId);
+        if (drawing) {
+          const path = drawingToPath(drawing.document);
+          for (const node of path) {
+            if ("station" in node) stationNames.add(node.station);
+          }
+        }
+      }
+
+      const weights = networkConfig.weights ?? {};
+      let weightRows = "";
+      for (const name of [...stationNames].sort()) {
+        const w = weights[name] ?? "";
+        weightRows += `<tr><td style="padding:4px 8px;">${name}</td><td style="padding:4px 8px;"><input type="number" name="network_weight_${name}" value="${w}" min="0" step="1" style="width:60px;"></td></tr>`;
+      }
+
+      const startOptions = [...stationNames]
+        .sort()
+        .map((s) => {
+          const sel = s === networkConfig.startStation ? " selected" : "";
+          return `<option value="${s}"${sel}>${s}</option>`;
+        })
+        .join("");
+
+      return `
+        <div class="form-group">
+          <label>Network Segments</label>
+          <div class="network-segments" style="max-height:120px;overflow-y:auto;border:1px solid var(--color-border-light);border-radius:4px;padding:4px 8px;">${segCheckboxes || "<em>No segments found on this scene</em>"}</div>
+        </div>
+        <div style="display:flex;gap:12px;">
+          <div class="form-group" style="flex:1;">
+            <label>Start Station</label>
+            <select name="network_startStation">${startOptions || '<option value="">--</option>'}</select>
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label>Max Hours</label>
+            <input type="number" name="network_maxHours" value="${networkConfig.maxHours ?? 0}" min="0" step="1">
+            <p class="hint" style="font-size:0.85em;opacity:0.7;margin:2px 0 0;">0 = indefinite</p>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Station Weights</label>
+          <p class="hint" style="font-size:0.85em;opacity:0.7;margin:2px 0 6px;">Set a positive weight for each station the train may choose as a destination. Stations without a weight are never chosen but may be traversed en route.</p>
+          <table class="station-weights-table" style="border-collapse:collapse;width:100%;">
+            <thead><tr><th style="text-align:left;padding:4px 8px;">Station</th><th style="text-align:left;padding:4px 8px;">Weight</th></tr></thead>
+            <tbody>${weightRows || '<tr><td colspan="2" style="padding:4px 8px;opacity:0.6;"><em>Select segments above to see stations</em></td></tr>'}</tbody>
+          </table>
+        </div>`;
+    }
+
     const content = `
       <form>
         <input type="hidden" name="id" value="${existing?.id ?? ""}">
         <div class="form-group">
           <label>Route Name</label>
           <input type="text" name="name" value="${existing?.name ?? ""}" required>
+        </div>
+        <div class="form-group">
+          <label>Route Type</label>
+          <select name="type">
+            <option value="fixed"${!isWander ? " selected" : ""}>Fixed Route</option>
+            <option value="wander"${isWander ? " selected" : ""}>Wandering</option>
+          </select>
+          <p class="hint" style="font-size:0.85em;opacity:0.7;margin:2px 0 0;">
+            Fixed routes follow a set path. Wandering routes randomly choose their next destination.
+          </p>
         </div>
         <h3 style="border-bottom:1px solid var(--color-border-light);padding-bottom:4px;">Train Actor</h3>
         <div class="form-group">
@@ -2031,6 +2162,11 @@ const api = {
           <p class="hint" style="font-size:0.85em;opacity:0.7;margin:2px 0 0;">
             Variables: <code>[[name]]</code> (route name), <code>[[actor]]</code> (actor name), <code>[[routeNum]]</code> (route number)
           </p>
+        </div>
+
+        <div class="network-section" style="${isWander ? "" : "display:none;"}">
+          <h3 style="border-bottom:1px solid var(--color-border-light);padding-bottom:4px;">Network</h3>
+          <div class="network-content">${isWander ? buildNetworkSection() : ""}</div>
         </div>
 
         <h3 style="border-bottom:1px solid var(--color-border-light);padding-bottom:4px;">
@@ -2172,6 +2308,89 @@ const api = {
           } catch {
             /* not valid drag data */
           }
+        });
+
+        // Route type toggle: show/hide network section and trip segment/direction fields
+        const typeSelect = form.querySelector('select[name="type"]');
+        const networkSection = form.querySelector(".network-section");
+        const updateRouteType = () => {
+          const wander = typeSelect.value === "wander";
+          networkSection.style.display = wander ? "" : "none";
+          // Rebuild network section content when switching to wander
+          if (wander && !networkSection.querySelector(".network-segments")) {
+            networkSection.querySelector(".network-content").innerHTML = buildNetworkSection();
+            // Attach segment checkbox listeners to refresh stations
+            networkSection.querySelectorAll('.network-segments input[type="checkbox"]').forEach((cb) => {
+              cb.addEventListener("change", refreshNetworkStations);
+            });
+          }
+          // Hide/show trip direction and segment fields
+          form.querySelectorAll(".trip-block").forEach((block) => {
+            const dirField = block.querySelector(`[name$="_dir"]`)?.closest("div");
+            const segArea = block.querySelector(".seg-chain")?.closest("div");
+            if (dirField) dirField.style.display = wander ? "none" : "";
+            if (segArea) segArea.style.display = wander ? "none" : "";
+          });
+        };
+        typeSelect.addEventListener("change", updateRouteType);
+        // Initial state
+        updateRouteType();
+
+        // Refresh station weights table when network segments change
+        const refreshNetworkStations = () => {
+          const checkboxes = form.querySelectorAll('.network-segments input[type="checkbox"]:checked');
+          const selectedSegs = [...checkboxes].map((cb) => cb.value);
+          const stationNames = new Set();
+          for (const segId of selectedSegs) {
+            const drawing = canvas.drawings?.placeables?.find(
+              (d) => d.document.flags?.[MODULE_ID]?.segmentId === segId,
+            );
+            if (drawing) {
+              const path = drawingToPath(drawing.document);
+              for (const node of path) {
+                if ("station" in node) stationNames.add(node.station);
+              }
+            }
+          }
+          // Preserve existing weight values
+          const existingWeights = {};
+          form.querySelectorAll('[name^="network_weight_"]').forEach((inp) => {
+            const name = inp.name.replace("network_weight_", "");
+            if (inp.value) existingWeights[name] = inp.value;
+          });
+          // Update start station dropdown
+          const startSelect = form.querySelector('[name="network_startStation"]');
+          if (startSelect) {
+            const prevStart = startSelect.value;
+            startSelect.innerHTML =
+              [...stationNames]
+                .sort()
+                .map((s) => {
+                  const sel = s === prevStart ? " selected" : "";
+                  return `<option value="${s}"${sel}>${s}</option>`;
+                })
+                .join("") || '<option value="">--</option>';
+          }
+          // Update weights table
+          const tbody = form.querySelector(".station-weights-table tbody");
+          if (tbody) {
+            if (stationNames.size === 0) {
+              tbody.innerHTML =
+                '<tr><td colspan="2" style="padding:4px 8px;opacity:0.6;"><em>Select segments above to see stations</em></td></tr>';
+            } else {
+              tbody.innerHTML = [...stationNames]
+                .sort()
+                .map((name) => {
+                  const w = existingWeights[name] ?? networkConfig.weights?.[name] ?? "";
+                  return `<tr><td style="padding:4px 8px;">${name}</td><td style="padding:4px 8px;"><input type="number" name="network_weight_${name}" value="${w}" min="0" step="1" style="width:60px;"></td></tr>`;
+                })
+                .join("");
+            }
+          }
+        };
+        // Attach initial segment checkbox listeners
+        networkSection.querySelectorAll('.network-segments input[type="checkbox"]').forEach((cb) => {
+          cb.addEventListener("change", refreshNetworkStations);
         });
 
         // Update cron description live when fields change
@@ -2320,6 +2539,32 @@ const api = {
       });
     }
 
+    const routeType = result.type === "wander" ? "wander" : undefined;
+
+    // Reconstruct network config for wandering routes
+    let network;
+    if (routeType === "wander") {
+      const segments = [];
+      for (const key of Object.keys(result)) {
+        const m = key.match(/^network_seg_(.+)$/);
+        if (m && result[key]) segments.push(m[1]);
+      }
+      const weights = {};
+      for (const key of Object.keys(result)) {
+        const m = key.match(/^network_weight_(.+)$/);
+        if (m) {
+          const w = Number(result[key]);
+          if (w > 0) weights[m[1]] = w;
+        }
+      }
+      network = {
+        startStation: result.network_startStation || "",
+        segments,
+        maxHours: Number(result.network_maxHours) || 0,
+        weights,
+      };
+    }
+
     const route = {
       id: result.id || foundry.utils.randomID(),
       name: result.name,
@@ -2327,6 +2572,8 @@ const api = {
       useActorSpeed: !!result.useActorSpeed,
       nameTemplate: result.nameTemplate || "[[name]] [[routeNum]]",
       schedule,
+      ...(routeType && { type: routeType }),
+      ...(network && { network }),
     };
     if (!route.actorId) {
       ui.notifications.warn("No actor selected — this route will not produce tokens.");

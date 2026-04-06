@@ -21,6 +21,13 @@ const {
   computeDesiredTokens,
   convertSpeedToPixelsPerHour,
   pixelDistanceToWorldDistance,
+  mulberry32,
+  hashSeed,
+  weightedChoice,
+  buildNetworkGraph,
+  aStar,
+  buildPathFromEdges,
+  computeWanderingWalk,
 } = mod;
 
 // ============================================================================
@@ -1591,5 +1598,551 @@ describe("buildRouteSegments with pixelsPerHour", () => {
       result.totalJourneySeconds,
       5 * SECONDS_PER_HOUR + 5 * 60 + 3 * SECONDS_PER_HOUR, // travel + dwell at B + travel
     );
+  });
+});
+
+// ============================================================================
+// Wandering Routes — PRNG utilities
+// ============================================================================
+
+describe("mulberry32", () => {
+  it("same seed produces same sequence", () => {
+    const rng1 = mulberry32(42);
+    const rng2 = mulberry32(42);
+    for (let i = 0; i < 10; i++) {
+      assert.equal(rng1(), rng2());
+    }
+  });
+
+  it("different seeds produce different sequences", () => {
+    const rng1 = mulberry32(42);
+    const rng2 = mulberry32(99);
+    const vals1 = Array.from({ length: 5 }, () => rng1());
+    const vals2 = Array.from({ length: 5 }, () => rng2());
+    assert.notDeepEqual(vals1, vals2);
+  });
+
+  it("output is in [0, 1)", () => {
+    const rng = mulberry32(12345);
+    for (let i = 0; i < 100; i++) {
+      const v = rng();
+      assert.ok(v >= 0 && v < 1, `value ${v} out of range`);
+    }
+  });
+});
+
+describe("hashSeed", () => {
+  it("same inputs produce same seed", () => {
+    assert.equal(hashSeed(1000, "route-a"), hashSeed(1000, "route-a"));
+  });
+
+  it("different departure times produce different seeds", () => {
+    assert.notEqual(hashSeed(1000, "route-a"), hashSeed(2000, "route-a"));
+  });
+
+  it("different route IDs produce different seeds", () => {
+    assert.notEqual(hashSeed(1000, "route-a"), hashSeed(1000, "route-b"));
+  });
+});
+
+describe("weightedChoice", () => {
+  it("single eligible option always chosen", () => {
+    const rng = mulberry32(1);
+    const weights = { A: 5 };
+    for (let i = 0; i < 10; i++) {
+      assert.equal(weightedChoice(["A", "B", "C"], weights, rng), "A");
+    }
+  });
+
+  it("unlisted options are never chosen", () => {
+    const rng = mulberry32(42);
+    const weights = { B: 1, C: 1 };
+    for (let i = 0; i < 50; i++) {
+      const choice = weightedChoice(["A", "B", "C"], weights, rng);
+      assert.notEqual(choice, "A");
+    }
+  });
+
+  it("extreme weights heavily bias selection", () => {
+    const rng = mulberry32(7);
+    const weights = { A: 1000, B: 1 };
+    let aCount = 0;
+    const N = 200;
+    for (let i = 0; i < N; i++) {
+      if (weightedChoice(["A", "B"], weights, rng) === "A") aCount++;
+    }
+    assert.ok(aCount > N * 0.9, `expected >90% A but got ${aCount}/${N}`);
+  });
+
+  it("deterministic with same rng state", () => {
+    const rng1 = mulberry32(55);
+    const rng2 = mulberry32(55);
+    const weights = { A: 1, B: 2, C: 3 };
+    const options = ["A", "B", "C"];
+    for (let i = 0; i < 20; i++) {
+      assert.equal(weightedChoice(options, weights, rng1), weightedChoice(options, weights, rng2));
+    }
+  });
+
+  it("returns null when no options are eligible", () => {
+    const rng = mulberry32(1);
+    const result = weightedChoice(["A", "B"], {}, rng);
+    assert.equal(result, null);
+  });
+});
+
+// ============================================================================
+// Wandering Routes — Network graph
+// ============================================================================
+
+// Shared test fixtures for wandering route tests
+//
+//   Y-shaped network:
+//        C(300,0)
+//       /
+//  A(0,0)--B(100,0)
+//       \
+//        D(300,200)
+//
+const wanderSegments = {
+  "a-b": [
+    { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+    { station: "B", x: 100, y: 0, hoursFromPrev: 1, dwellMinutes: 5 },
+  ],
+  "b-c": [
+    { station: "B", x: 100, y: 0, dwellMinutes: 5 },
+    { x: 150, y: -50 }, // waypoint
+    { station: "C", x: 300, y: 0, hoursFromPrev: 2, dwellMinutes: 5 },
+  ],
+  "b-d": [
+    { station: "B", x: 100, y: 0, dwellMinutes: 5 },
+    { station: "D", x: 300, y: 200, hoursFromPrev: 3, dwellMinutes: 5 },
+  ],
+};
+
+const wanderPathResolver = (segmentId) => wanderSegments[segmentId] ?? null;
+
+describe("buildNetworkGraph", () => {
+  it("creates bidirectional edges between consecutive stations", () => {
+    const graph = buildNetworkGraph(["a-b"], wanderPathResolver);
+    const adjA = graph.adjacency.get("A");
+    const adjB = graph.adjacency.get("B");
+    assert.ok(adjA, "A should be in adjacency");
+    assert.ok(adjB, "B should be in adjacency");
+    assert.equal(adjA.length, 1);
+    assert.equal(adjA[0].targetStation, "B");
+    assert.equal(adjB.length, 1);
+    assert.equal(adjB[0].targetStation, "A");
+  });
+
+  it("stores edge cost from hoursFromPrev", () => {
+    const graph = buildNetworkGraph(["a-b"], wanderPathResolver);
+    const edgeAB = graph.adjacency.get("A").find((e) => e.targetStation === "B");
+    assert.equal(edgeAB.cost, 1);
+    const edgeBA = graph.adjacency.get("B").find((e) => e.targetStation === "A");
+    assert.equal(edgeBA.cost, 1); // same cost both directions
+  });
+
+  it("stores fromIndex and toIndex for sub-path extraction", () => {
+    const graph = buildNetworkGraph(["b-c"], wanderPathResolver);
+    const edgeBC = graph.adjacency.get("B").find((e) => e.targetStation === "C");
+    assert.equal(edgeBC.fromIndex, 0);
+    assert.equal(edgeBC.toIndex, 2); // B(0), waypoint(1), C(2)
+  });
+
+  it("merges edges from multiple segments at shared station", () => {
+    const graph = buildNetworkGraph(["a-b", "b-c", "b-d"], wanderPathResolver);
+    const adjB = graph.adjacency.get("B");
+    // B connects to A (from a-b), C (from b-c), D (from b-d)
+    const targets = adjB.map((e) => e.targetStation).sort();
+    assert.deepEqual(targets, ["A", "C", "D"]);
+  });
+
+  it("handles T-junction where segment endpoint meets mid-waypoint", () => {
+    // Segment "long" has A--waypoint--C with no station at waypoint
+    // Segment "branch" has endpoint near the waypoint
+    const paths = {
+      long: [
+        { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+        { x: 100, y: 0 }, // waypoint at (100,0)
+        { station: "C", x: 200, y: 0, hoursFromPrev: 2, dwellMinutes: 5 },
+      ],
+      branch: [
+        { station: "E", x: 100, y: 100, dwellMinutes: 0 },
+        { station: "F", x: 100, y: 1, hoursFromPrev: 1, dwellMinutes: 5 }, // F near waypoint at (100,0)
+      ],
+    };
+    const resolver = (id) => paths[id];
+    const graph = buildNetworkGraph(["long", "branch"], resolver);
+    // F should connect to the graph via a synthetic junction near (100,0)
+    // The junction splits "long" into A→junction and junction→C
+    // F connects to the junction
+    const junctionEdges = [...graph.adjacency.entries()].find(([name]) => name.startsWith("_junction"));
+    assert.ok(junctionEdges, "should create a synthetic junction node");
+    const [, junctionAdj] = junctionEdges;
+    const jTargets = junctionAdj.map((e) => e.targetStation).sort();
+    // Junction should connect to A, C (from split long), and F (from branch endpoint)
+    assert.ok(jTargets.includes("A"), "junction connects to A");
+    assert.ok(jTargets.includes("C"), "junction connects to C");
+    assert.ok(jTargets.includes("F"), "junction connects to F");
+  });
+
+  it("skips segments with no stations", () => {
+    const paths = {
+      empty: [
+        { x: 0, y: 0 },
+        { x: 100, y: 100 },
+      ],
+    };
+    const resolver = (id) => paths[id];
+    const graph = buildNetworkGraph(["empty"], resolver);
+    assert.equal(graph.adjacency.size, 0);
+  });
+
+  it("skips null/unresolvable segments", () => {
+    const resolver = () => null;
+    const graph = buildNetworkGraph(["missing"], resolver);
+    assert.equal(graph.adjacency.size, 0);
+  });
+});
+
+// ============================================================================
+// Wandering Routes — A* pathfinding
+// ============================================================================
+
+describe("aStar", () => {
+  it("finds direct connection between adjacent stations", () => {
+    const graph = buildNetworkGraph(["a-b"], wanderPathResolver);
+    const result = aStar(graph.adjacency, "A", "B");
+    assert.ok(result, "should find a path");
+    assert.equal(result.length, 1);
+    assert.equal(result[0].segmentId, "a-b");
+  });
+
+  it("finds multi-hop path through intermediate stations", () => {
+    const graph = buildNetworkGraph(["a-b", "b-c"], wanderPathResolver);
+    const result = aStar(graph.adjacency, "A", "C");
+    assert.ok(result, "should find a path");
+    assert.equal(result.length, 2);
+    assert.equal(result[0].segmentId, "a-b");
+    assert.equal(result[1].segmentId, "b-c");
+  });
+
+  it("returns null for unreachable station", () => {
+    // Disconnected graph: a-b and separate e-f
+    const paths = {
+      "a-b": wanderSegments["a-b"],
+      "e-f": [
+        { station: "E", x: 500, y: 500, dwellMinutes: 0 },
+        { station: "F", x: 600, y: 500, hoursFromPrev: 1, dwellMinutes: 5 },
+      ],
+    };
+    const resolver = (id) => paths[id];
+    const graph = buildNetworkGraph(["a-b", "e-f"], resolver);
+    const result = aStar(graph.adjacency, "A", "F");
+    assert.equal(result, null);
+  });
+
+  it("chooses shortest of multiple paths", () => {
+    // A--B--C with shortcut A--C (cost 1 vs cost 3 via B)
+    const paths = {
+      "a-b": [
+        { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+        { station: "B", x: 100, y: 0, hoursFromPrev: 1, dwellMinutes: 0 },
+      ],
+      "b-c": [
+        { station: "B", x: 100, y: 0, dwellMinutes: 0 },
+        { station: "C", x: 200, y: 0, hoursFromPrev: 2, dwellMinutes: 0 },
+      ],
+      "a-c": [
+        { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+        { station: "C", x: 200, y: 0, hoursFromPrev: 1, dwellMinutes: 0 },
+      ],
+    };
+    const resolver = (id) => paths[id];
+    const graph = buildNetworkGraph(["a-b", "b-c", "a-c"], resolver);
+    const result = aStar(graph.adjacency, "A", "C");
+    assert.ok(result);
+    // Should pick the direct a-c route (cost 1) over a-b + b-c (cost 3)
+    assert.equal(result.length, 1);
+    assert.equal(result[0].segmentId, "a-c");
+  });
+
+  it("includes fromIndex/toIndex for sub-path extraction", () => {
+    const graph = buildNetworkGraph(["b-c"], wanderPathResolver);
+    const result = aStar(graph.adjacency, "B", "C");
+    assert.ok(result);
+    assert.equal(result[0].fromIndex, 0);
+    assert.equal(result[0].toIndex, 2);
+  });
+
+  it("handles reverse traversal", () => {
+    const graph = buildNetworkGraph(["a-b"], wanderPathResolver);
+    const result = aStar(graph.adjacency, "B", "A");
+    assert.ok(result);
+    assert.equal(result[0].fromIndex, 1); // start at B (index 1)
+    assert.equal(result[0].toIndex, 0); // end at A (index 0)
+  });
+});
+
+// ============================================================================
+// Wandering Routes — buildPathFromEdges
+// ============================================================================
+
+describe("buildPathFromEdges", () => {
+  it("builds path from a single forward edge", () => {
+    const graph = buildNetworkGraph(["a-b"], wanderPathResolver);
+    const edges = [{ segmentId: "a-b", fromIndex: 0, toIndex: 1 }];
+    const path = buildPathFromEdges(edges, graph.paths);
+    assert.equal(path.length, 2);
+    assert.equal(path[0].station, "A");
+    assert.equal(path[1].station, "B");
+  });
+
+  it("builds path from a single reversed edge", () => {
+    const graph = buildNetworkGraph(["a-b"], wanderPathResolver);
+    const edges = [{ segmentId: "a-b", fromIndex: 1, toIndex: 0 }];
+    const path = buildPathFromEdges(edges, graph.paths);
+    assert.equal(path.length, 2);
+    assert.equal(path[0].station, "B");
+    assert.equal(path[1].station, "A");
+  });
+
+  it("includes waypoints in multi-point edge", () => {
+    const graph = buildNetworkGraph(["b-c"], wanderPathResolver);
+    const edges = [{ segmentId: "b-c", fromIndex: 0, toIndex: 2 }];
+    const path = buildPathFromEdges(edges, graph.paths);
+    assert.equal(path.length, 3); // B, waypoint, C
+    assert.equal(path[0].station, "B");
+    assert.ok(!("station" in path[1])); // waypoint
+    assert.equal(path[2].station, "C");
+  });
+
+  it("chains multiple edges and drops duplicate junction", () => {
+    const graph = buildNetworkGraph(["a-b", "b-c"], wanderPathResolver);
+    const edges = [
+      { segmentId: "a-b", fromIndex: 0, toIndex: 1 },
+      { segmentId: "b-c", fromIndex: 0, toIndex: 2 },
+    ];
+    const path = buildPathFromEdges(edges, graph.paths);
+    // A, B (junction — appears once, not twice), waypoint, C
+    const stationNames = path.filter((n) => "station" in n).map((n) => n.station);
+    assert.deepEqual(stationNames, ["A", "B", "C"]);
+  });
+
+  it("applies max-dwell rule at junctions", () => {
+    // B has dwellMinutes 5 in a-b, and dwellMinutes 5 in b-c
+    const graph = buildNetworkGraph(["a-b", "b-c"], wanderPathResolver);
+    const edges = [
+      { segmentId: "a-b", fromIndex: 0, toIndex: 1 },
+      { segmentId: "b-c", fromIndex: 0, toIndex: 2 },
+    ];
+    const path = buildPathFromEdges(edges, graph.paths);
+    const bNode = path.find((n) => n.station === "B");
+    assert.equal(bNode.dwellMinutes, 5);
+  });
+
+  it("zeros first station dwellMinutes", () => {
+    const graph = buildNetworkGraph(["a-b"], wanderPathResolver);
+    const edges = [{ segmentId: "a-b", fromIndex: 0, toIndex: 1 }];
+    const path = buildPathFromEdges(edges, graph.paths);
+    assert.equal(path[0].dwellMinutes, 0);
+  });
+});
+
+// ============================================================================
+// Wandering Routes — computeWanderingWalk
+// ============================================================================
+
+describe("computeWanderingWalk", () => {
+  const baseNetwork = {
+    startStation: "A",
+    segments: ["a-b", "b-c", "b-d"],
+    maxHours: 48,
+    weights: { A: 1, B: 2, C: 1, D: 1 },
+  };
+
+  it("produces legs compatible with getTrainPosition", () => {
+    const result = computeWanderingWalk(baseNetwork, 1000, "route1", wanderPathResolver);
+    assert.ok(result.legs.length > 0, "should produce legs");
+    assert.ok(result.totalJourneySeconds > 0, "should have journey time");
+    // First leg should start at A
+    assert.equal(result.legs[0].startStation.station, "A");
+    // Should be usable by getTrainPosition
+    const pos = getTrainPosition(result.legs, result.totalJourneySeconds, 1800);
+    assert.ok(pos, "getTrainPosition should return a position");
+    assert.ok(typeof pos.x === "number");
+    assert.ok(typeof pos.y === "number");
+  });
+
+  it("is deterministic — same seed produces same walk", () => {
+    const r1 = computeWanderingWalk(baseNetwork, 1000, "route1", wanderPathResolver);
+    const r2 = computeWanderingWalk(baseNetwork, 1000, "route1", wanderPathResolver);
+    assert.equal(r1.legs.length, r2.legs.length);
+    assert.equal(r1.totalJourneySeconds, r2.totalJourneySeconds);
+    for (let i = 0; i < r1.legs.length; i++) {
+      assert.equal(r1.legs[i].startStation.station, r2.legs[i].startStation.station);
+      assert.equal(r1.legs[i].endStation.station, r2.legs[i].endStation.station);
+    }
+  });
+
+  it("different seeds produce different walks", () => {
+    const r1 = computeWanderingWalk(baseNetwork, 1000, "route1", wanderPathResolver);
+    const r2 = computeWanderingWalk(baseNetwork, 2000, "route1", wanderPathResolver);
+    // With different seeds, at least one station choice should differ
+    const stations1 = r1.legs.map((l) => l.endStation.station).join(",");
+    const stations2 = r2.legs.map((l) => l.endStation.station).join(",");
+    // Not guaranteed to differ on every run, but overwhelmingly likely
+    // with enough legs. Let's check they aren't all identical.
+    assert.ok(r1.legs.length > 2, "should have enough legs to compare");
+    // Soft check: if they're identical, try a third seed to confirm it's not a fluke
+    if (stations1 === stations2) {
+      const r3 = computeWanderingWalk(baseNetwork, 3000, "route1", wanderPathResolver);
+      const stations3 = r3.legs.map((l) => l.endStation.station).join(",");
+      assert.notEqual(stations1, stations3, "three identical walks is extremely unlikely");
+    }
+  });
+
+  it("respects maxHours bound", () => {
+    const shortNetwork = { ...baseNetwork, maxHours: 2 };
+    const result = computeWanderingWalk(shortNetwork, 1000, "route1", wanderPathResolver);
+    // Fewer legs than the uncapped version — first hop may overshoot maxHours
+    // but subsequent hops are blocked. Total journey bounded by first hop + dwell.
+    const uncapped = computeWanderingWalk(baseNetwork, 1000, "route1", wanderPathResolver);
+    assert.ok(
+      result.legs.length < uncapped.legs.length,
+      `capped (${result.legs.length} legs) should have fewer legs than uncapped (${uncapped.legs.length})`,
+    );
+    assert.ok(
+      result.totalJourneySeconds < uncapped.totalJourneySeconds,
+      `capped journey (${result.totalJourneySeconds}s) should be shorter than uncapped (${uncapped.totalJourneySeconds}s)`,
+    );
+  });
+
+  it("single segment network: train goes back and forth", () => {
+    const singleNetwork = {
+      startStation: "A",
+      segments: ["a-b"],
+      maxHours: 5,
+      weights: { A: 1, B: 1 },
+    };
+    const result = computeWanderingWalk(singleNetwork, 42, "r", wanderPathResolver);
+    assert.ok(result.legs.length >= 2, "should traverse at least twice");
+    // Should alternate between A and B
+    const starts = result.legs.map((l) => l.startStation.station);
+    assert.equal(starts[0], "A");
+    assert.equal(starts[1], "B");
+  });
+
+  it("terminates at dead end when no weighted destinations reachable", () => {
+    // Only weight C, which is reachable from A via B
+    // After arriving at C, no weighted destinations left (A and B not in weights)
+    const deadEndNetwork = {
+      startStation: "A",
+      segments: ["a-b", "b-c"],
+      maxHours: 48,
+      weights: { C: 1 },
+    };
+    const result = computeWanderingWalk(deadEndNetwork, 1000, "route1", wanderPathResolver);
+    // Should produce legs A→B→C then stop
+    const endStations = result.legs.map((l) => l.endStation.station);
+    assert.ok(endStations.includes("C"), "should reach C");
+  });
+
+  it("multi-hop: picks distant destination and routes through intermediates", () => {
+    // Network: A--B--C, weights only A and C
+    // From A, train picks C → routes through B to get there
+    const linearNetwork = {
+      startStation: "A",
+      segments: ["a-b", "b-c"],
+      maxHours: 48,
+      weights: { A: 1, C: 1 },
+    };
+    const result = computeWanderingWalk(linearNetwork, 42, "route1", wanderPathResolver);
+    // First walk segment should go A→B→C (multi-hop to reach C)
+    assert.equal(result.legs[0].startStation.station, "A");
+    // B should appear as an intermediate stop
+    const allStations = result.legs.flatMap((l) => [l.startStation.station, l.endStation.station]);
+    assert.ok(allStations.includes("B"), "B should be traversed as intermediate");
+    assert.ok(allStations.includes("C"), "C should be reached");
+  });
+});
+
+// ============================================================================
+// Wandering Routes — computeDesiredTokens integration
+// ============================================================================
+
+describe("computeDesiredTokens with wandering routes", () => {
+  const makeWanderRoute = () => ({
+    id: "wander-test",
+    type: "wander",
+    network: {
+      startStation: "A",
+      segments: ["a-b", "b-c"],
+      maxHours: 48,
+      weights: { A: 1, B: 1, C: 1 },
+    },
+    schedule: [
+      {
+        cron: "0 6",
+        routeNumbers: ["W1"],
+      },
+    ],
+  });
+
+  // Inline path resolver for wandering routes — resolves single segments
+  const singleSegResolver = (segmentId) => {
+    const paths = {
+      "a-b": [
+        { station: "A", x: 0, y: 0, dwellMinutes: 0 },
+        { station: "B", x: 100, y: 0, hoursFromPrev: 1, dwellMinutes: 5 },
+      ],
+      "b-c": [
+        { station: "B", x: 100, y: 0, dwellMinutes: 5 },
+        { station: "C", x: 200, y: 0, hoursFromPrev: 2, dwellMinutes: 5 },
+      ],
+    };
+    return paths[segmentId] ?? null;
+  };
+
+  // worldTime at 7:30 on day 0 — 1.5 hours into journey departing at 6:00
+  const worldTime = 7.5 * SECONDS_PER_HOUR;
+
+  it("produces tokens for wandering routes", () => {
+    const results = computeDesiredTokens(makeWanderRoute(), worldTime, [], {
+      singleSegmentResolver: singleSegResolver,
+    });
+    assert.ok(results.length > 0, "should produce at least one token");
+    assert.equal(results[0].routeId, "wander-test");
+    assert.ok(typeof results[0].x === "number");
+    assert.ok(typeof results[0].y === "number");
+  });
+
+  it("closeLine event suppresses wandering departures", () => {
+    const events = [
+      {
+        id: "close1",
+        type: "closeLine",
+        target: { routeId: "wander-test" },
+        startTime: 0,
+        endTime: null,
+      },
+    ];
+    const results = computeDesiredTokens(makeWanderRoute(), worldTime, events, {
+      singleSegmentResolver: singleSegResolver,
+    });
+    assert.equal(results.length, 0);
+  });
+
+  it("wandering tokens are deterministic across calls", () => {
+    const opts = { singleSegmentResolver: singleSegResolver };
+    const r1 = computeDesiredTokens(makeWanderRoute(), worldTime, [], opts);
+    const r2 = computeDesiredTokens(makeWanderRoute(), worldTime, [], opts);
+    assert.equal(r1.length, r2.length);
+    for (let i = 0; i < r1.length; i++) {
+      assert.equal(r1[i].x, r2[i].x);
+      assert.equal(r1[i].y, r2[i].y);
+      assert.equal(r1[i].atStation, r2[i].atStation);
+    }
   });
 });

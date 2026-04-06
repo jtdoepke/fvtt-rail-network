@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-04-06
+
+### Added
+
+- **Wandering routes**: New route type where trains randomly choose their next destination station based on weighted probabilities. Uses a seeded PRNG for deterministic walks — same departure always follows the same path. Supports A\* pathfinding through multi-segment networks and T-junctions. Configure via the route edit dialog with a "Wandering" route type, network segments, station weights, and max journey duration (0 for indefinite).
+
 ### Fixed
 
 - Station Status tool now shows en-route trains in Upcoming Arrivals and Upcoming Departures (previously only showed future scheduled departures, missing trains already in transit)
@@ -213,7 +219,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional Sequencer and Calendaria module integration
 - GitHub Actions release workflow
 
-[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.13...HEAD
+[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.14...HEAD
+[0.0.14]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.13...v0.0.14
 [0.0.13]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.12...v0.0.13
 [0.0.12]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.11...v0.0.12
 [0.0.11]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.10...v0.0.11

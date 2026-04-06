@@ -687,7 +687,8 @@ export function applyEvents(activeEvents, departureTime, elapsed, legs, worldTim
  */
 export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
   const normalized = normalizeSchedule(route);
-  const { pathResolver, calendarDecomposer, pixelsPerHour } = opts;
+  const { pathResolver, calendarDecomposer, pixelsPerHour, singleSegmentResolver } = opts;
+  const isWander = normalized.type === "wander";
 
   const activeEvents = getActiveEvents(allEvents, normalized.id, worldTime);
 
@@ -698,6 +699,10 @@ export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
   // Compute it from the first trip's path as an estimate, then refine per-departure.
   // Use a generous default if no path resolves.
   let maxJourneySeconds = 24 * SECONDS_PER_HOUR; // default 24h lookback
+
+  if (isWander && normalized.network?.maxHours > 0) {
+    maxJourneySeconds = normalized.network.maxHours * SECONDS_PER_HOUR;
+  }
 
   // Cache resolved path+legs by segments+direction key
   const pathCache = new Map();
@@ -729,38 +734,72 @@ export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
     return result;
   };
 
-  // Try to get a better maxJourneySeconds from the first resolvable trip
-  for (const trip of normalized.schedule) {
-    const resolved = resolveTrip(trip.segments, trip.direction);
-    if (resolved) {
-      maxJourneySeconds = Math.max(maxJourneySeconds, resolved.totalJourneySeconds);
+  if (!isWander) {
+    // Try to get a better maxJourneySeconds from the first resolvable trip
+    for (const trip of normalized.schedule) {
+      const resolved = resolveTrip(trip.segments, trip.direction);
+      if (resolved) {
+        maxJourneySeconds = Math.max(maxJourneySeconds, resolved.totalJourneySeconds);
+      }
     }
   }
 
   // Find scheduled departures across all trips
   const scheduled = findAllActiveDepartures(worldTime, normalized.schedule, maxJourneySeconds, calendarDecomposer);
 
-  // Extra departures (from events) need legs for the default path
-  const firstTrip = normalized.schedule[0];
-  const defaultResolved = firstTrip ? resolveTrip(firstTrip.segments, firstTrip.direction) : null;
-  const extras = defaultResolved
-    ? findExtraDepartures(activeEvents, worldTime, defaultResolved.legs).map((dep) => ({
-        ...dep,
-        routeNum: "X",
-        direction: firstTrip.direction,
-        segments: firstTrip.segments,
-      }))
-    : [];
+  // Extra departures (from events) need legs for the default path (fixed routes only)
+  let extras = [];
+  if (!isWander) {
+    const firstTrip = normalized.schedule[0];
+    const defaultResolved = firstTrip ? resolveTrip(firstTrip.segments, firstTrip.direction) : null;
+    extras = defaultResolved
+      ? findExtraDepartures(activeEvents, worldTime, defaultResolved.legs).map((dep) => ({
+          ...dep,
+          routeNum: "X",
+          direction: firstTrip.direction,
+          segments: firstTrip.segments,
+        }))
+      : [];
+  }
 
   const allDepartures = [...scheduled, ...extras];
 
   const results = [];
 
-  for (const dep of allDepartures) {
-    const resolved = resolveTrip(dep.segments, dep.direction);
-    if (!resolved) continue;
+  // Resolve the segment path resolver for wandering routes
+  const wanderResolver = isWander
+    ? (segmentId) => {
+        if (singleSegmentResolver) return singleSegmentResolver(segmentId);
+        // Fallback: look for inline paths in the network segments
+        // (used by tests that pass segment paths directly)
+        const segConfig = normalized.network?.segments;
+        if (!segConfig) return null;
+        // segConfig is array of segment IDs; no inline paths available
+        return null;
+      }
+    : null;
 
-    const { legs, totalJourneySeconds } = resolved;
+  for (const dep of allDepartures) {
+    let legs, totalJourneySeconds;
+
+    if (isWander) {
+      const walkResult = computeWanderingWalk(
+        normalized.network,
+        dep.departureTime,
+        normalized.id,
+        wanderResolver,
+        pixelsPerHour ?? null,
+      );
+      if (!walkResult || walkResult.legs.length === 0) continue;
+      legs = walkResult.legs;
+      totalJourneySeconds = walkResult.totalJourneySeconds;
+    } else {
+      const resolved = resolveTrip(dep.segments, dep.direction);
+      if (!resolved) continue;
+      legs = resolved.legs;
+      totalJourneySeconds = resolved.totalJourneySeconds;
+    }
+
     const { skip, adjustedElapsed } = applyEvents(activeEvents, dep.departureTime, dep.elapsed, legs, worldTime);
     if (skip) continue;
 
@@ -1159,4 +1198,468 @@ export function normalizeSchedule(route) {
 
   const { schedule: _, routeNumbers: __, segments: ___, ...rest } = route;
   return { ...rest, schedule: entries };
+}
+
+// ============================================================================
+// WANDERING ROUTES — PRNG utilities
+// ============================================================================
+
+/**
+ * Mulberry32 seeded PRNG. Returns a function that produces the next
+ * pseudo-random float in [0, 1) on each call.
+ *
+ * @param {number} seed - Integer seed
+ * @returns {() => number}
+ */
+export function mulberry32(seed) {
+  let s = seed | 0;
+  return function () {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Derive a deterministic integer seed from departure time and route ID.
+ *
+ * @param {number} departureTime - Seconds since epoch
+ * @param {string} routeId - Route identifier
+ * @returns {number}
+ */
+export function hashSeed(departureTime, routeId) {
+  let hash = departureTime;
+  for (let i = 0; i < routeId.length; i++) {
+    hash = ((hash << 5) - hash + routeId.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
+
+/**
+ * Choose from options using weights and a PRNG.
+ * Only options present in weightMap are eligible.
+ *
+ * @param {Array<string>} options - Available choices
+ * @param {Object<string, number>} weightMap - Weight per option (key=option name)
+ * @param {() => number} rng - PRNG function returning [0, 1)
+ * @returns {string|null} Chosen option, or null if no eligible options
+ */
+export function weightedChoice(options, weightMap, rng) {
+  const eligible = options.filter((o) => (weightMap[o] ?? 0) > 0);
+  if (eligible.length === 0) return null;
+
+  const totalWeight = eligible.reduce((sum, o) => sum + weightMap[o], 0);
+  let r = rng() * totalWeight;
+  for (const opt of eligible) {
+    r -= weightMap[opt];
+    if (r <= 0) return opt;
+  }
+  return eligible[eligible.length - 1];
+}
+
+/**
+ * Build a network adjacency graph from segment paths.
+ * Every station in every segment becomes a graph node. Edges connect
+ * consecutive stations within each segment, bidirectionally.
+ *
+ * Cross-segment connections: for each segment's start/end points, finds
+ * the nearest point in any other segment. If that point is a station,
+ * the stations are linked by name. If it's a non-station waypoint, a
+ * synthetic zero-dwell junction node is inserted.
+ *
+ * @param {Array<string>} segmentIds - Segment IDs in the network
+ * @param {Function} pathResolver - (segmentId) => path array for a single segment
+ * @returns {{ adjacency: Map<string, Array<{segmentId, targetStation, cost, fromIndex, toIndex}>>,
+ *             paths: Map<string, Array> }}
+ */
+export function buildNetworkGraph(segmentIds, pathResolver) {
+  const adjacency = new Map();
+  const paths = new Map();
+
+  const ensureNode = (name) => {
+    if (!adjacency.has(name)) adjacency.set(name, []);
+  };
+
+  const addEdge = (from, to, segmentId, cost, fromIndex, toIndex) => {
+    ensureNode(from);
+    adjacency.get(from).push({ segmentId, targetStation: to, cost, fromIndex, toIndex });
+  };
+
+  // Phase 1: Build intra-segment edges between consecutive stations
+  const resolvedPaths = new Map();
+  for (const segId of segmentIds) {
+    const path = pathResolver(segId);
+    if (!path || path.length === 0) continue;
+
+    const stations = [];
+    for (let i = 0; i < path.length; i++) {
+      if ("station" in path[i]) stations.push({ index: i, node: path[i] });
+    }
+    if (stations.length < 2) {
+      // Single station or no stations — skip
+      if (stations.length === 1) ensureNode(stations[0].node.station);
+      continue;
+    }
+
+    resolvedPaths.set(segId, path);
+    paths.set(segId, path);
+
+    for (let s = 0; s < stations.length - 1; s++) {
+      const a = stations[s];
+      const b = stations[s + 1];
+      const cost = b.node.hoursFromPrev ?? 0;
+      addEdge(a.node.station, b.node.station, segId, cost, a.index, b.index);
+      addEdge(b.node.station, a.node.station, segId, cost, b.index, a.index);
+    }
+  }
+
+  // Phase 2: Cross-segment connections at endpoints
+  // For each segment's start/end points, find nearest point in other segments
+  const segEntries = [...resolvedPaths.entries()];
+  for (let i = 0; i < segEntries.length; i++) {
+    const [segIdA, pathA] = segEntries[i];
+    const endpoints = [0, pathA.length - 1];
+
+    for (const epIdx of endpoints) {
+      const ep = pathA[epIdx];
+      // Only look for connections if this endpoint is a station
+      // (non-station endpoints are unusual but possible)
+      let epStationName = "station" in ep ? ep.station : null;
+
+      let bestDist = Infinity;
+      let bestSegId = null;
+      let bestPointIdx = -1;
+
+      for (let j = 0; j < segEntries.length; j++) {
+        if (i === j) continue;
+        const [segIdB, pathB] = segEntries[j];
+
+        for (let k = 0; k < pathB.length; k++) {
+          const d = Math.hypot(ep.x - pathB[k].x, ep.y - pathB[k].y);
+          if (d < bestDist) {
+            bestDist = d;
+            bestSegId = segIdB;
+            bestPointIdx = k;
+          }
+        }
+      }
+
+      if (bestSegId === null) continue;
+
+      const bestPath = resolvedPaths.get(bestSegId);
+      const bestPoint = bestPath[bestPointIdx];
+      const bestIsStation = "station" in bestPoint;
+
+      if (bestIsStation) {
+        // The nearest point is a station in another segment.
+        // If epStationName matches bestPoint.station, they're already linked
+        // (same station name across segments → edges already merged via name).
+        // If names differ, they're close but distinct — no auto-link needed.
+        continue;
+      }
+
+      // T-junction: endpoint meets a non-station waypoint in another segment.
+      // Insert a synthetic junction node and split the other segment.
+      if (!epStationName) continue; // Can't link if our endpoint has no station either
+
+      const junctionName = `_junction_${Math.round(bestPoint.x)}_${Math.round(bestPoint.y)}`;
+
+      // Check if this junction already exists
+      if (adjacency.has(junctionName)) {
+        // Just add edge from our station to the existing junction
+        addEdge(epStationName, junctionName, segIdA, 0, epIdx, epIdx);
+        addEdge(junctionName, epStationName, segIdA, 0, epIdx, epIdx);
+        continue;
+      }
+
+      ensureNode(junctionName);
+
+      // Link our station to the junction
+      addEdge(epStationName, junctionName, segIdA, 0, epIdx, epIdx);
+      addEdge(junctionName, epStationName, segIdA, 0, epIdx, epIdx);
+
+      // Split the other segment at bestPointIdx
+      // Find the stations immediately before and after the junction point
+      const stationsInBest = [];
+      for (let k = 0; k < bestPath.length; k++) {
+        if ("station" in bestPath[k]) stationsInBest.push({ index: k, node: bestPath[k] });
+      }
+
+      // Find which station pair the junction falls between
+      let prevStation = null;
+      let nextStation = null;
+      for (let s = 0; s < stationsInBest.length; s++) {
+        if (stationsInBest[s].index > bestPointIdx) {
+          nextStation = stationsInBest[s];
+          if (s > 0) prevStation = stationsInBest[s - 1];
+          break;
+        }
+        prevStation = stationsInBest[s];
+      }
+      if (!prevStation && !nextStation) continue;
+
+      // Remove the existing edge between prevStation and nextStation
+      // and replace with edges through the junction
+      if (prevStation && nextStation) {
+        const prevName = prevStation.node.station;
+        const nextName = nextStation.node.station;
+
+        // Remove old edges between prev and next for this segment
+        const filterEdge = (edges, target, segId) =>
+          edges.filter((e) => !(e.targetStation === target && e.segmentId === segId));
+
+        adjacency.set(prevName, filterEdge(adjacency.get(prevName) ?? [], nextName, bestSegId));
+        adjacency.set(nextName, filterEdge(adjacency.get(nextName) ?? [], prevName, bestSegId));
+
+        // Estimate cost split proportionally by index distance
+        const origEdge = { cost: nextStation.node.hoursFromPrev ?? 0 };
+        const totalIdxSpan = nextStation.index - prevStation.index;
+        const splitRatio = totalIdxSpan > 0 ? (bestPointIdx - prevStation.index) / totalIdxSpan : 0.5;
+        const costBefore = origEdge.cost * splitRatio;
+        const costAfter = origEdge.cost * (1 - splitRatio);
+
+        addEdge(prevName, junctionName, bestSegId, costBefore, prevStation.index, bestPointIdx);
+        addEdge(junctionName, prevName, bestSegId, costBefore, bestPointIdx, prevStation.index);
+        addEdge(junctionName, nextName, bestSegId, costAfter, bestPointIdx, nextStation.index);
+        addEdge(nextName, junctionName, bestSegId, costAfter, nextStation.index, bestPointIdx);
+      } else if (prevStation) {
+        const prevName = prevStation.node.station;
+        addEdge(prevName, junctionName, bestSegId, 0, prevStation.index, bestPointIdx);
+        addEdge(junctionName, prevName, bestSegId, 0, bestPointIdx, prevStation.index);
+      } else if (nextStation) {
+        const nextName = nextStation.node.station;
+        addEdge(junctionName, nextName, bestSegId, 0, bestPointIdx, nextStation.index);
+        addEdge(nextName, junctionName, bestSegId, 0, nextStation.index, bestPointIdx);
+      }
+    }
+  }
+
+  return { adjacency, paths };
+}
+
+/**
+ * A* shortest-path on the station graph.
+ * Returns the ordered list of edge traversals from start to end.
+ *
+ * @param {Map<string, Array>} adjacency - From buildNetworkGraph
+ * @param {string} startStation - Starting station name
+ * @param {string} endStation - Destination station name
+ * @param {Function} [heuristic] - (stationA, stationB) => estimated cost. Defaults to 0 (Dijkstra).
+ * @returns {Array<{segmentId, fromIndex, toIndex}>|null} Edge traversals, or null if unreachable
+ */
+export function aStar(adjacency, startStation, endStation, heuristic) {
+  if (!adjacency.has(startStation) || !adjacency.has(endStation)) return null;
+  const h = heuristic ?? (() => 0);
+
+  // Open set as a simple array (fine for small graphs)
+  const gScore = new Map([[startStation, 0]]);
+  const fScore = new Map([[startStation, h(startStation, endStation)]]);
+  const cameFrom = new Map(); // station → { parentStation, edge }
+  const open = new Set([startStation]);
+  const closed = new Set();
+
+  while (open.size > 0) {
+    // Pick node with lowest fScore
+    let current = null;
+    let bestF = Infinity;
+    for (const node of open) {
+      const f = fScore.get(node) ?? Infinity;
+      if (f < bestF) {
+        bestF = f;
+        current = node;
+      }
+    }
+
+    if (current === endStation) {
+      // Reconstruct path
+      const edges = [];
+      let node = endStation;
+      while (cameFrom.has(node)) {
+        const { parentStation, edge } = cameFrom.get(node);
+        edges.unshift(edge);
+        node = parentStation;
+      }
+      return edges;
+    }
+
+    open.delete(current);
+    closed.add(current);
+
+    const neighbors = adjacency.get(current) ?? [];
+    for (const edge of neighbors) {
+      if (closed.has(edge.targetStation)) continue;
+
+      const tentativeG = (gScore.get(current) ?? Infinity) + edge.cost;
+      const prevG = gScore.get(edge.targetStation) ?? Infinity;
+
+      if (tentativeG < prevG) {
+        cameFrom.set(edge.targetStation, {
+          parentStation: current,
+          edge: { segmentId: edge.segmentId, fromIndex: edge.fromIndex, toIndex: edge.toIndex, cost: edge.cost },
+        });
+        gScore.set(edge.targetStation, tentativeG);
+        fScore.set(edge.targetStation, tentativeG + h(edge.targetStation, endStation));
+        open.add(edge.targetStation);
+      }
+    }
+  }
+
+  return null; // unreachable
+}
+
+/**
+ * Convert an A* edge list into a unified travel path with waypoints.
+ * Extracts sub-paths from each segment, reversing if needed, and
+ * concatenates them (dropping duplicate junction nodes, applying max-dwell).
+ *
+ * @param {Array<{segmentId, fromIndex, toIndex}>} edges - From aStar()
+ * @param {Map<string, Array>} segmentPaths - From buildNetworkGraph().paths
+ * @returns {Array} Unified path array of station and waypoint nodes
+ */
+export function buildPathFromEdges(edges, segmentPaths) {
+  if (edges.length === 0) return [];
+
+  let unified = null;
+
+  for (const edge of edges) {
+    const fullPath = segmentPaths.get(edge.segmentId);
+    if (!fullPath) continue;
+
+    const subPath = orientAndSlicePath(fullPath, edge.fromIndex, edge.toIndex);
+    if (subPath.length === 0) continue;
+
+    if (!unified) {
+      unified = subPath.map((n) => ({ ...n }));
+      // Zero first station's dwell
+      if ("station" in unified[0]) unified[0].dwellMinutes = 0;
+      continue;
+    }
+
+    // Join: drop duplicate junction node, apply max-dwell
+    const lastUnified = unified[unified.length - 1];
+    const firstNew = subPath[0];
+
+    if ("station" in lastUnified && "station" in firstNew) {
+      // Max-dwell rule at junction
+      lastUnified.dwellMinutes = Math.max(lastUnified.dwellMinutes ?? 0, firstNew.dwellMinutes ?? 0);
+      // Skip the duplicate first node of the new sub-path
+      for (let i = 1; i < subPath.length; i++) {
+        unified.push({ ...subPath[i] });
+      }
+    } else {
+      // No station overlap — just append
+      for (const node of subPath) {
+        unified.push({ ...node });
+      }
+    }
+  }
+
+  return unified ?? [];
+}
+
+/**
+ * Compute a wandering walk through a rail network.
+ * Uses seeded PRNG for deterministic random choices at each station.
+ * At each station, picks a destination from weights, routes via A*,
+ * and traverses the full path to get there.
+ *
+ * @param {Object} network - Network config
+ * @param {string} network.startStation - Starting station name
+ * @param {Array<string>} network.segments - Available segment IDs
+ * @param {number} network.maxHours - Maximum journey duration (0 = indefinite)
+ * @param {Object} network.weights - Per-station destination weights
+ * @param {number} departureTime - Departure timestamp (part of PRNG seed)
+ * @param {string} routeId - Route ID (part of PRNG seed)
+ * @param {Function} pathResolver - (segmentId) => path array
+ * @param {number|null} [pixelsPerHour=null] - Actor-speed mode
+ * @returns {{ legs: Array, totalJourneySeconds: number }}
+ */
+export function computeWanderingWalk(network, departureTime, routeId, pathResolver, pixelsPerHour = null) {
+  const graph = buildNetworkGraph(network.segments, pathResolver);
+  const rng = mulberry32(hashSeed(departureTime, routeId));
+
+  // Pre-compute reachable stations from startStation via BFS
+  const reachable = new Set();
+  const bfsQueue = [network.startStation];
+  while (bfsQueue.length > 0) {
+    const node = bfsQueue.shift();
+    if (reachable.has(node)) continue;
+    reachable.add(node);
+    for (const edge of graph.adjacency.get(node) ?? []) {
+      if (!reachable.has(edge.targetStation)) bfsQueue.push(edge.targetStation);
+    }
+  }
+
+  const maxSeconds = network.maxHours > 0 ? network.maxHours * SECONDS_PER_HOUR : Infinity;
+  let currentStation = network.startStation;
+  let accumulatedPath = null;
+  let estimatedSeconds = 0;
+
+  // Safety cap for indefinite routes: don't generate more than 10000 hops
+  const maxHops = 10000;
+  let hops = 0;
+
+  while (hops < maxHops) {
+    // Find eligible destinations: in weights, reachable, not current station
+    const eligible = Object.keys(network.weights).filter(
+      (s) => s !== currentStation && reachable.has(s) && network.weights[s] > 0,
+    );
+    if (eligible.length === 0) break;
+
+    const destination = weightedChoice(eligible, network.weights, rng);
+    if (!destination) break;
+
+    // Route from current to destination via A*
+    const edges = aStar(graph.adjacency, currentStation, destination);
+    if (!edges || edges.length === 0) break;
+
+    // Build the sub-path for this walk segment
+    const subPath = buildPathFromEdges(edges, graph.paths);
+    if (subPath.length < 2) break;
+
+    // Estimate travel time for this hop from edge costs + dwell
+    let hopSeconds = 0;
+    for (const edge of edges) {
+      hopSeconds += (edge.cost ?? 0) * SECONDS_PER_HOUR;
+    }
+    // Add dwell times from intermediate stations in the sub-path
+    for (const node of subPath) {
+      if ("station" in node) hopSeconds += (node.dwellMinutes ?? 0) * 60;
+    }
+
+    // Check if adding this hop would exceed maxHours (always allow first hop)
+    if (accumulatedPath && estimatedSeconds + hopSeconds > maxSeconds) break;
+
+    if (accumulatedPath) {
+      // Join to accumulated path — drop duplicate junction
+      const lastNode = accumulatedPath[accumulatedPath.length - 1];
+      const firstNew = subPath[0];
+
+      if ("station" in lastNode && "station" in firstNew) {
+        lastNode.dwellMinutes = Math.max(lastNode.dwellMinutes ?? 0, firstNew.dwellMinutes ?? 0);
+        for (let i = 1; i < subPath.length; i++) {
+          accumulatedPath.push({ ...subPath[i] });
+        }
+      } else {
+        for (const node of subPath) {
+          accumulatedPath.push({ ...node });
+        }
+      }
+    } else {
+      accumulatedPath = subPath.map((n) => ({ ...n }));
+      // Zero first station's dwell (departure point)
+      if ("station" in accumulatedPath[0]) accumulatedPath[0].dwellMinutes = 0;
+    }
+
+    estimatedSeconds += hopSeconds;
+    currentStation = destination;
+    hops++;
+  }
+
+  if (!accumulatedPath || accumulatedPath.length < 2) {
+    return { legs: [], totalJourneySeconds: 0 };
+  }
+
+  return buildRouteSegments(accumulatedPath, pixelsPerHour ?? null);
 }
