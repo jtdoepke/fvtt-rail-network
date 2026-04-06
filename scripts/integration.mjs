@@ -36,6 +36,23 @@ let _updating = false;
 let _pendingWorldTime = null;
 let _tagSegmentHandler = null;
 
+const DELAYED_STATUS_ID = "rail-network-delayed";
+
+async function setDelayedStatus(tokenDoc, active) {
+  const token = canvas.tokens.get(tokenDoc.id);
+  if (!token?.actor) return;
+  const existing = token.actor.effects.find(e => e.statuses.has(DELAYED_STATUS_ID));
+  if (active && !existing) {
+    await token.actor.createEmbeddedDocuments("ActiveEffect", [{
+      name: "Delayed",
+      img: "icons/svg/clockwork.svg",
+      statuses: [DELAYED_STATUS_ID],
+    }]);
+  } else if (!active && existing) {
+    await existing.delete();
+  }
+}
+
 function invalidateCache(segmentId) {
   if (segmentId) _pathCache.delete(segmentId);
   else _pathCache.clear();
@@ -165,6 +182,17 @@ async function updateAllTrains(worldTime) {
     const allDesired = [];
     for (const route of routes) {
       const normalized = normalizeSchedule(route);
+
+      // Look up the actor for this route
+      const actor = game.actors.get(normalized.actorId);
+      if (!actor) {
+        if (normalized.actorId) {
+          console.warn(`${MODULE_ID} | Route "${normalized.id}" references missing actor ${normalized.actorId}`);
+        }
+        continue;
+      }
+      const protoToken = actor.prototypeToken;
+
       const activeEvents = getActiveEvents(allEvents, normalized.id, worldTime);
 
       // closeLine → skip entirely
@@ -208,7 +236,7 @@ async function updateAllTrains(worldTime) {
         : [];
 
       const allDepartures = [...scheduled, ...extras];
-      const proto = normalized.tokenPrototype;
+      const nameTemplate = normalized.nameTemplate ?? "[[name]] [[routeNum]]";
 
       for (const dep of allDepartures) {
         const resolved = resolveTrip(dep.segments, dep.direction);
@@ -237,18 +265,22 @@ async function updateAllTrains(worldTime) {
         if (!pos) continue;
 
         const routeNum = dep.startStationName ? "X" : (dep.routeNum ?? "?");
+        const tokenName = nameTemplate
+          .replace("[[name]]", protoToken.name ?? actor.name)
+          .replace("[[routeNum]]", routeNum);
 
         allDesired.push({
           routeId: normalized.id,
           departureTime: dep.departureTime,
           routeNum,
-          name: `Route ${routeNum} -- ${proto.name}`,
+          name: tokenName,
           x: pos.x,
           y: pos.y,
           atStation: pos.atStation,
-          texture: proto.texture,
-          width: proto.width ?? 1,
-          height: proto.height ?? 1,
+          delayed: !!delayEvt,
+          actorId: normalized.actorId,
+          width: protoToken.width ?? 1,
+          height: protoToken.height ?? 1,
         });
       }
     }
@@ -274,21 +306,23 @@ async function updateAllTrains(worldTime) {
       let y = desired.y - halfH;
 
       if (!existing) {
-        toCreate.push({
-          name: desired.name,
-          texture: desired.texture,
-          width: desired.width,
-          height: desired.height,
-          x, y,
-          flags: {
-            [MODULE_ID]: {
-              managed: true,
-              routeId: desired.routeId,
-              departureTime: desired.departureTime,
-              routeNum: desired.routeNum,
+        const actor = game.actors.get(desired.actorId);
+        if (actor) {
+          const tokenDoc = await actor.getTokenDocument({
+            x, y,
+            actorLink: false,
+            name: desired.name,
+            flags: {
+              [MODULE_ID]: {
+                managed: true,
+                routeId: desired.routeId,
+                departureTime: desired.departureTime,
+                routeNum: desired.routeNum,
+              },
             },
-          },
-        });
+          });
+          toCreate.push({ data: tokenDoc.toObject(), delayed: desired.delayed });
+        }
         fireHook("trainDeparted", desired.routeId, desired.departureTime, desired.atStation, null);
       } else {
         // Check if movement needed
@@ -320,14 +354,25 @@ async function updateAllTrains(worldTime) {
 
     // Execute batch operations
     if (toCreate.length > 0) {
-      const created = await canvas.scene.createEmbeddedDocuments("Token", toCreate);
-      for (const doc of created) {
+      const created = await canvas.scene.createEmbeddedDocuments("Token", toCreate.map(c => c.data));
+      for (let i = 0; i < created.length; i++) {
+        const doc = created[i];
         _intendedPositions.set(doc.id, { x: doc.x, y: doc.y });
+        if (toCreate[i].delayed) {
+          await setDelayedStatus(doc, true);
+        }
       }
     }
 
     if (toDelete.length > 0) {
       await canvas.scene.deleteEmbeddedDocuments("Token", toDelete);
+    }
+
+    // Toggle delayed status on existing tokens
+    for (const [key, desired] of desiredByKey) {
+      const tokenDoc = existingByKey.get(key);
+      if (!tokenDoc) continue;
+      await setDelayedStatus(tokenDoc, desired.delayed);
     }
 
     // Animate moves
@@ -478,6 +523,7 @@ const api = {
     for (const route of routes) {
       const normalized = normalizeSchedule(route);
       const active = getActiveEvents(events, normalized.id, worldTime);
+      const actorName = normalized.actorId ? (game.actors.get(normalized.actorId)?.name ?? "Unknown Actor") : "No actor";
 
       // Show info for each trip
       let tripCount = 0;
@@ -490,13 +536,13 @@ const api = {
         stationNames.push(legs[legs.length - 1].endStation.station);
         const desc = describeCronExpression(trip.cron, false);
         const routeNums = trip.routeNumbers?.join(", ") || "?";
-        if (tripCount === 0) lines.push(`<br><b>${normalized.id}:</b>`);
+        if (tripCount === 0) lines.push(`<br><b>${normalized.id}</b> (${actorName}):`);
         lines.push(`&nbsp;&nbsp;#${routeNums} ${desc} (${(trip.direction ?? "outbound")}): ${stationNames.join(" → ")} [${(totalJourneySeconds / 3600).toFixed(1)}h]`);
         tripCount++;
       }
 
       if (tripCount === 0) {
-        lines.push(`<br><b>${normalized.id}:</b> No active path`);
+        lines.push(`<br><b>${normalized.id}</b> (${actorName}): No active path`);
         continue;
       }
 
@@ -781,10 +827,8 @@ const api = {
       id: "rail-network-event-edit",
       window: { title: isEdit ? `Rail Network — Edit Event: ${eventId}` : "Rail Network — Create Event" },
       content,
-      // Foundry v14: explicit left required for horizontal dragging
       position: { width: 500, left: 200, top: 100 },
       render: (event, dialog) => {
-        // Foundry v14: window-content has overflow:hidden by default; enable scrolling
         const scrollEl = dialog.element.querySelector(".window-content");
         if (scrollEl) {
           scrollEl.style.overflowY = "auto";
@@ -829,7 +873,7 @@ const api = {
         {
           action: "save",
           label: isEdit ? "Save" : "Create Event",
-          callback: (event, button) => new (foundry.applications.ux?.FormDataExtended ?? FormDataExtended)(button.form).object,
+          callback: (event, button) => new foundry.applications.ux.FormDataExtended(button.form).object,
         },
         { action: "cancel", label: "Cancel" },
       ],
@@ -920,7 +964,6 @@ const api = {
       id: "rail-network-event-list",
       window: { title: "Rail Network — Event Manager" },
       content,
-      // Foundry v14: explicit left required for horizontal dragging (null left → NaN on drag)
       position: { width: 700, left: 100, top: 50 },
       render: (event, dialog) => {
         const el = dialog.element;
@@ -1065,7 +1108,6 @@ const api = {
       content,
       position: { width: 700, height: 600, top: 50, left: 100 },
       render: (event, dialog) => {
-        // Foundry v14: window-content has overflow:hidden by default; enable scrolling
         const el = dialog.element ?? dialog;
         const scrollEl = el.querySelector?.(".window-content") ?? el.closest?.(".application")?.querySelector(".window-content");
         if (scrollEl) {
@@ -1106,7 +1148,7 @@ const api = {
           action: "save",
           label: "Save",
           callback: (event, button) => {
-            const fd = new (foundry.applications.ux?.FormDataExtended ?? FormDataExtended)(button.form);
+            const fd = new foundry.applications.ux.FormDataExtended(button.form);
             return fd.object;
           },
         },
@@ -1238,27 +1280,30 @@ const api = {
           <label>Route ID</label>
           <input type="text" name="id" value="${existing?.id ?? ""}" ${isEdit ? "readonly" : ""} required>
         </div>
-        <h3 style="border-bottom:1px solid var(--color-border-light);padding-bottom:4px;">Token Prototype</h3>
+        <h3 style="border-bottom:1px solid var(--color-border-light);padding-bottom:4px;">Train Actor</h3>
         <div class="form-group">
-          <label>Service Name</label>
-          <input type="text" name="proto_name" value="${existing?.tokenPrototype?.name ?? ""}" required>
+          <label>Actor</label>
+          <select name="actorId" style="width:100%;">
+            <option value="">-- Select Actor --</option>
+            ${game.actors.map(a => {
+              const sel = a.id === existing?.actorId ? " selected" : "";
+              return `<option value="${a.id}"${sel}>${a.name}</option>`;
+            }).join("")}
+          </select>
+        </div>
+        <div class="form-group rail-actor-drop-zone"
+             style="border:2px dashed var(--color-border-light);border-radius:4px;padding:8px;text-align:center;cursor:default;">
+          <span class="drop-hint" style="opacity:0.6;">Or drag an actor here from the sidebar</span>
+          <div class="actor-preview" style="display:flex;align-items:center;gap:8px;justify-content:center;"></div>
         </div>
         <div class="form-group">
-          <label>Texture Path</label>
-          <div style="display:flex;gap:4px;">
-            <input type="text" name="proto_texture" value="${existing?.tokenPrototype?.texture?.src ?? "icons/svg/lightning.svg"}" style="flex:1;">
-            <button type="button" data-action="pick-texture" style="flex:0 0 auto;"><i class="fas fa-file-image"></i></button>
-          </div>
-        </div>
-        <div class="form-group" style="display:flex;gap:8px;">
-          <div style="flex:1;">
-            <label>Width</label>
-            <input type="number" name="proto_width" value="${existing?.tokenPrototype?.width ?? 0.8}" step="0.1" min="0.1">
-          </div>
-          <div style="flex:1;">
-            <label>Height</label>
-            <input type="number" name="proto_height" value="${existing?.tokenPrototype?.height ?? 0.8}" step="0.1" min="0.1">
-          </div>
+          <label>Name Template</label>
+          <input type="text" name="nameTemplate"
+                 value="${existing?.nameTemplate ?? "[[name]] [[routeNum]]"}"
+                 placeholder="[[name]] [[routeNum]]">
+          <p class="hint" style="font-size:0.85em;opacity:0.7;margin:2px 0 0;">
+            Variables: <code>[[name]]</code> (actor token name), <code>[[routeNum]]</code> (route number)
+          </p>
         </div>
 
         <h3 style="border-bottom:1px solid var(--color-border-light);padding-bottom:4px;">
@@ -1305,25 +1350,56 @@ const api = {
       id: "rail-network-route-edit",
       window: { title: isEdit ? `Rail Network — Edit Route: ${routeId}` : "Rail Network — New Route" },
       content,
-      // Foundry v14: explicit left required for horizontal dragging
       position: { width: 620, top: 50, left: 200 },
       render: (event, dialog) => {
         const form = dialog.element.querySelector("form");
         if (!form) return;
 
-        // Foundry v14: window-content has overflow:hidden by default; enable scrolling
         const scrollEl = dialog.element.querySelector(".window-content");
         if (scrollEl) {
           scrollEl.style.overflowY = "auto";
           scrollEl.scrollTop = 0;
         }
 
-        // FilePicker for texture path
-        form.querySelector("[data-action='pick-texture']")?.addEventListener("click", async (e) => {
+        // Actor preview updater
+        const actorSelect = form.querySelector('select[name="actorId"]');
+        const dropZone = form.querySelector(".rail-actor-drop-zone");
+        const updateActorPreview = (actorId) => {
+          const actor = game.actors.get(actorId);
+          const preview = form.querySelector(".actor-preview");
+          const hint = form.querySelector(".drop-hint");
+          if (actor) {
+            const imgSrc = actor.prototypeToken.texture.src ?? actor.img;
+            preview.innerHTML = `<img src="${imgSrc}" width="36" height="36" style="border:0;border-radius:2px;"> <strong>${actor.name}</strong>`;
+            if (hint) hint.style.display = "none";
+          } else {
+            preview.innerHTML = "";
+            if (hint) hint.style.display = "";
+          }
+        };
+        updateActorPreview(existing?.actorId);
+        actorSelect.addEventListener("change", () => updateActorPreview(actorSelect.value));
+
+        // Drag-drop actor from sidebar
+        dropZone.addEventListener("dragover", (e) => {
           e.preventDefault();
-          const input = form.querySelector('input[name="proto_texture"]');
-          const fp = new FilePicker({ type: "image", current: input.value, callback: (path) => { input.value = path; } });
-          fp.render(true);
+          e.dataTransfer.dropEffect = "link";
+          dropZone.style.borderColor = "var(--color-shadow-primary)";
+        });
+        dropZone.addEventListener("dragleave", () => {
+          dropZone.style.borderColor = "";
+        });
+        dropZone.addEventListener("drop", async (e) => {
+          e.preventDefault();
+          dropZone.style.borderColor = "";
+          try {
+            const data = JSON.parse(e.dataTransfer.getData("text/plain"));
+            if (data.type !== "Actor") return;
+            const actor = await fromUuid(data.uuid);
+            if (!actor) return;
+            actorSelect.value = actor.id;
+            updateActorPreview(actor.id);
+          } catch { /* not valid drag data */ }
         });
 
         // Update cron description live when fields change
@@ -1429,7 +1505,7 @@ const api = {
         {
           action: "save",
           label: "Save",
-          callback: (event, button) => new (foundry.applications.ux?.FormDataExtended ?? FormDataExtended)(button.form).object,
+          callback: (event, button) => new foundry.applications.ux.FormDataExtended(button.form).object,
         },
         { action: "cancel", label: "Cancel" },
       ],
@@ -1481,14 +1557,13 @@ const api = {
 
     const route = {
       id: result.id,
-      tokenPrototype: {
-        name: result.proto_name,
-        texture: { src: result.proto_texture || "icons/svg/lightning.svg" },
-        width: Number(result.proto_width) || 0.8,
-        height: Number(result.proto_height) || 0.8,
-      },
+      actorId: result.actorId || undefined,
+      nameTemplate: result.nameTemplate || "[[name]] [[routeNum]]",
       schedule,
     };
+    if (!route.actorId) {
+      ui.notifications.warn("No actor selected — this route will not produce tokens.");
+    }
 
     if (isEdit) {
       await api.updateRoute(routeId, route);
@@ -1523,7 +1598,7 @@ const api = {
       rows += `
         <tr>
           <td>${r.id}</td>
-          <td>${r.tokenPrototype?.name ?? "—"}</td>
+          <td>${r.actorId ? (game.actors.get(r.actorId)?.name ?? "Unknown Actor") : "No actor"}</td>
           <td>${tripCount}</td>
           <td>${schedSummary || "—"}</td>
           <td style="white-space:nowrap;">
@@ -1542,7 +1617,7 @@ const api = {
         <thead>
           <tr style="border-bottom:1px solid var(--color-border-light);">
             <th style="text-align:left;">Route ID</th>
-            <th style="text-align:left;">Service</th>
+            <th style="text-align:left;">Actor</th>
             <th>Trips</th>
             <th style="text-align:left;">Schedule</th>
             <th>Actions</th>
@@ -1556,7 +1631,6 @@ const api = {
       id: "rail-network-route-list",
       window: { title: "Rail Network — Manage Routes" },
       content,
-      // Foundry v14: explicit left required for horizontal dragging
       position: { width: 600, left: 200, top: 100 },
       render: (event, dialog) => {
         const el = dialog.element;
@@ -1697,8 +1771,6 @@ Hooks.on("deleteDrawing", (drawing, options, userId) => {
 });
 
 // Scene control buttons (GM only)
-// Foundry v14: controls is a plain object keyed by name (not an array),
-// and tools is also a plain object keyed by name (not an array).
 Hooks.on("getSceneControlButtons", (controls) => {
   if (!game.user.isGM) return;
   controls[MODULE_ID] = {

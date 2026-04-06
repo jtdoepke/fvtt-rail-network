@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-04-05
+
+### Changed
+- Train tokens are now created from Actor documents — select any actor to represent your train
+- Route config uses `actorId` and `nameTemplate` fields (replaces `tokenPrototype`)
+- Default name template: `[[name]] [[routeNum]]`
+- Module now requires Foundry VTT v14 or later (v13 support dropped)
+
+### Added
+- "Delayed" status effect icon displayed on train tokens during active delay events
+- Drag-and-drop: drop an actor from the sidebar into the route edit dialog
+- Actor dropdown selector with image preview in route edit dialog
+- Configurable token name template per route
+
+### Removed
+- Foundry VTT v13 support
+- `tokenPrototype` field in route config (replaced by `actorId`)
+
 ## [0.0.7] - 2026-04-05
 
 ### Fixed
@@ -98,7 +116,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional Sequencer and Calendaria module integration
 - GitHub Actions release workflow
 
-[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.7...HEAD
+[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.8...HEAD
+[0.0.8]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.4...v0.0.5

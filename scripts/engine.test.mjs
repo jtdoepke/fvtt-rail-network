@@ -18,6 +18,8 @@ const {
   parseCronExpression,
   describeCronExpression,
   normalizeSchedule,
+  computeDesiredTokens,
+  applyEvents,
 } = mod;
 
 // ============================================================================
@@ -1294,5 +1296,75 @@ describe("normalizeSchedule", () => {
     assert.equal(norm.segments, undefined);
     assert.equal(norm.routeNumbers, undefined);
     assert.equal(norm.id, "test");
+  });
+});
+
+// ============================================================================
+// computeDesiredTokens — delayed flag
+// ============================================================================
+
+describe("computeDesiredTokens", () => {
+  // Simple two-station route for testing
+  const makeRoute = () => ({
+    id: "test-route",
+    schedule: [{
+      cron: "0 6",
+      routeNumbers: ["101"],
+      direction: "outbound",
+      segments: [{
+        segmentId: "seg1",
+        path: [
+          { station: "A", x: 0, y: 0, hoursFromPrev: 0, dwellMinutes: 0 },
+          { station: "B", x: 100, y: 0, hoursFromPrev: 2, dwellMinutes: 0 },
+        ],
+      }],
+    }],
+  });
+
+  // worldTime at 7:00 on day 0 — 1 hour into the 2-hour journey departing at 6:00
+  const worldTime = 7 * SECONDS_PER_HOUR;
+
+  it("returns delayed: false when no delay event", () => {
+    const results = computeDesiredTokens(makeRoute(), worldTime, []);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].delayed, false);
+    assert.equal(results[0].routeNum, "101");
+  });
+
+  it("returns delayed: true when delay event targets the departure", () => {
+    const depTime = 6 * SECONDS_PER_HOUR; // 06:00
+    const events = [{
+      id: "evt1",
+      type: "delay",
+      target: { routeId: "test-route", departureTime: depTime },
+      startTime: 0,
+      endTime: null,
+      delayHours: 0.5,
+    }];
+    const results = computeDesiredTokens(makeRoute(), worldTime, events);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].delayed, true);
+  });
+
+  it("returns delayed: false when delay event targets a different departure", () => {
+    const events = [{
+      id: "evt1",
+      type: "delay",
+      target: { routeId: "test-route", departureTime: 99999 },
+      startTime: 0,
+      endTime: null,
+      delayHours: 0.5,
+    }];
+    const results = computeDesiredTokens(makeRoute(), worldTime, events);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].delayed, false);
+  });
+
+  it("does not include texture/width/height in results", () => {
+    const results = computeDesiredTokens(makeRoute(), worldTime, []);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].texture, undefined);
+    assert.equal(results[0].width, undefined);
+    assert.equal(results[0].height, undefined);
   });
 });

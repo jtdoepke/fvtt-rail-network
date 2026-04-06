@@ -322,7 +322,7 @@ describe("computeDesiredTokens", () => {
     assert.equal(tokens.length, 1);
     assert.equal(tokens[0].routeId, "test-route");
     assert.equal(tokens[0].departureTime, 5 * SECONDS_PER_DAY + 14 * SECONDS_PER_HOUR);
-    assert.equal(tokens[0].name, "Route 1 -- Test Express");
+    assert.equal(tokens[0].routeNum, "1");
     assert.ok(tokens[0].x != null);
     assert.ok(tokens[0].y != null);
   });
@@ -399,9 +399,9 @@ describe("computeDesiredTokens", () => {
     const tokens = computeDesiredTokens(route, worldTime, []);
 
     assert.equal(tokens.length, 2);
-    const names = tokens.map(t => t.name).sort();
-    assert.ok(names.includes("Route 1 -- Test Express"));
-    assert.ok(names.includes("Route 3 -- Test Express"));
+    const routeNums = tokens.map(t => t.routeNum).sort();
+    assert.ok(routeNums.includes("1"));
+    assert.ok(routeNums.includes("3"));
   });
 
   it("delay event slows train position", () => {

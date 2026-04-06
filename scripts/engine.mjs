@@ -598,13 +598,13 @@ export function applyEvents(activeEvents, departureTime, elapsed, legs, worldTim
  * Computes the desired token state for a single route at a given world time.
  * Pure function — no Foundry API calls.
  *
- * @param {Object} route - Route config (schedule array of trips, tokenPrototype)
+ * @param {Object} route - Route config (schedule array of trips)
  * @param {number} worldTime - Current world time
  * @param {Array} allEvents - All stored events
  * @param {Object} [opts] - Options
  * @param {Function} [opts.pathResolver] - (segments, worldTime) → path array. Required for Drawing-based segments.
  * @param {Function} [opts.calendarDecomposer] - (worldTime) → { minute, hour, dayOfMonth, month, dayOfWeek }
- * @returns {Array<{ routeId, departureTime, name, x, y, atStation, texture, width, height }>}
+ * @returns {Array<{ routeId, departureTime, routeNum, name, x, y, atStation, delayed }>}
  */
 export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
   const normalized = normalizeSchedule(route);
@@ -676,7 +676,6 @@ export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
   const allDepartures = [...scheduled, ...extras];
 
   const results = [];
-  const proto = normalized.tokenPrototype;
 
   for (const dep of allDepartures) {
     const resolved = resolveTrip(dep.segments, dep.direction);
@@ -690,17 +689,18 @@ export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
     if (!pos) continue;
 
     const routeNum = dep.startStationName ? "X" : (dep.routeNum ?? "?");
+    const isDelayed = activeEvents.some(e =>
+      e.type === "delay" && e.target.departureTime === dep.departureTime
+    );
 
     results.push({
       routeId: normalized.id,
       departureTime: dep.departureTime,
-      name: `Route ${routeNum} -- ${proto.name}`,
+      routeNum,
       x: pos.x,
       y: pos.y,
       atStation: pos.atStation,
-      texture: proto.texture,
-      width: proto.width,
-      height: proto.height,
+      delayed: isDelayed,
     });
   }
 
