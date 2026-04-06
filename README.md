@@ -2,18 +2,19 @@
 
 A [Foundry VTT](https://foundryvtt.com/) module that animates train tokens along drawn routes based on in-game time. Trains follow configurable schedules, respond to events (delays, blockages, closures), and optionally integrate with [Sequencer](https://github.com/fantasycalendar/FoundryVTT-Sequencer) and [Calendaria](https://github.com/fantasycalendar/FoundryVTT-Calendaria). Setting-agnostic — works with any game world's rail or transit network.
 
-**Compatibility:** Foundry VTT v13+ (verified on v14)
+**Compatibility:** Foundry VTT v14+
 
 ## Features
 
 - **Time-driven animation** — Token positions computed as a pure function of `game.time.worldTime`. No incremental state. Time reversal (flashbacks, rewinds) works automatically.
-- **Configurable schedules** — Daily or multi-day departure intervals with multiple departure times per day.
-- **Route chaining** — Combine multiple track segments into a single route with junction handling.
+- **Actor-based tokens** — Train tokens are created from Actor documents. Any actor can represent a train, with configurable name templates.
+- **Cron-based schedules** — Flexible departure schedules using cron expressions, with per-trip direction (outbound, return, round trip) and segment paths.
+- **Route chaining** — Combine multiple track segments into a single route with automatic closest-endpoint matching and T-junction support.
 - **Event system** — Delay trains, block tracks, close lines, destroy or halt specific departures, and inject extra unscheduled departures.
-- **GM API** — Full scripting interface at `game.railNetwork` for managing routes, events, and tokens.
-- **Scene controls** — Toolbar buttons for quick access to refresh, event management, segment tagging, and route status.
-- **Custom hooks** — React to train departures, arrivals, delays, and other events from other modules or macros.
-- **Optional integrations** — Sequencer for smooth token animation; Calendaria for calendar-triggered rail events.
+- **Interactive tools** — Draw Track tool for creating segments, Status tool for clicking trains and stations to view info popups, Tag Segment tool for configuring stations.
+- **GM API** — Full scripting interface at `game.railNetwork` for managing routes, events, and tokens. See [API.md](API.md).
+- **Custom hooks** — React to train departures, arrivals, delays, and other events from other modules or macros. Notification hooks fire once per state change.
+- **Optional integrations** — Sequencer for smooth token animation; Calendaria for calendar-aware scheduling and date formatting.
 
 ## Installation
 
@@ -33,11 +34,11 @@ Download `module.zip` from the [latest release](https://github.com/jtdoepke/fvtt
 
 ### 1. Draw your tracks
 
-Use the Foundry **Drawing tool** (polygon/polyline) to draw track paths on your scene. Each Drawing represents one track segment — a contiguous section of rail between stations.
+Use the **Draw Track** tool in the Rail Network toolbar (or the Foundry Drawing tool) to draw track paths on your scene. Each Drawing represents one track segment — a contiguous section of rail between stations.
 
 ### 2. Tag segments
 
-Select a Drawing and click the **Tag Segment** button in the token controls toolbar (or run `game.railNetwork.setupDialog()`). This opens a dialog where you assign a segment ID and configure stations at specific waypoints along the Drawing:
+Select a Drawing and click the **Tag Segment** tool in the Rail Network toolbar (or run `game.railNetwork.setupDialog()`). This opens a dialog where you assign a segment ID and configure stations at specific waypoints along the Drawing:
 
 - **Station name** — Display name for the stop
 - **Hours from previous** — Travel time from the prior station
@@ -45,30 +46,36 @@ Select a Drawing and click the **Tag Segment** button in the token controls tool
 
 ### 3. Configure a route
 
-Routes chain one or more segments into a service line. Configure via the API:
+Click **Manage Routes** in the Rail Network toolbar to open the route management dialog. From there you can create routes, assign actors, define trips with cron schedules, and configure segments.
+
+You can also configure routes via the API:
 
 ```js
-const routes = game.settings.get("rail-network", "routes");
-routes.push({
-  id: "capital-express",
-  segments: [
-    { segmentId: "northgate-crossing" },
-    { segmentId: "crossing-capital" },
+await game.railNetwork.addRoute({
+  name: "Capital Express",
+  actorId: "your-actor-id-here",
+  nameTemplate: "[[name]] [[routeNum]]",
+  schedule: [
+    {
+      cron: "0 8,18",                    // 8:00 AM and 6:00 PM daily
+      direction: "outbound",
+      routeNumbers: [1],
+      segments: [
+        { segmentId: "northgate-crossing" },
+        { segmentId: "crossing-capital" },
+      ],
+    },
+    {
+      cron: "0 8,18",
+      direction: "return",
+      routeNumbers: [2],
+      segments: [
+        { segmentId: "northgate-crossing" },
+        { segmentId: "crossing-capital" },
+      ],
+    },
   ],
-  tokenPrototype: {
-    name: "Capital Express",
-    texture: { src: "icons/svg/lightning.svg" },
-    width: 0.8,
-    height: 0.8,
-  },
-  routeNumbers: [1, 3],          // odd = outbound, even = return
-  schedule: {
-    intervalDays: 1,              // departs daily
-    startDayOffset: 0,
-    departureHours: [8, 18],      // 8:00 AM and 6:00 PM
-  },
 });
-await game.settings.set("rail-network", "routes", routes);
 ```
 
 ### 4. Advance time
@@ -98,22 +105,44 @@ Routes are stored in the `rail-network.routes` world setting:
 
 | Field | Description |
 |-------|-------------|
-| `id` | Unique route identifier |
-| `segments` | Array of `{ segmentId, effectiveStart? }` — segments chained in order |
-| `tokenPrototype` | Token document data (`name`, `texture`, `width`, `height`, etc.) |
-| `routeNumbers` | Array of route numbers (odd = outbound, even = return) |
-| `schedule.intervalDays` | Days between departures (1 = daily, 3 = every 3 days) |
-| `schedule.startDayOffset` | Which day in the cycle has departures |
-| `schedule.departureHours` | Array of 24-hour departure times (e.g., `[8, 14, 22]`) |
-| `sceneId` | *(optional)* Restrict route to a specific scene |
+| `id` | Auto-generated unique identifier |
+| `name` | Display name for the route |
+| `actorId` | Actor document ID used to create train tokens |
+| `nameTemplate` | Token name template (e.g., `[[name]] [[routeNum]]`; supports `[[name]]`, `[[actor]]`, `[[routeNum]]`) |
+| `schedule` | Array of trip objects (see below) |
 
-### Schedule System
+Each trip in the `schedule` array:
 
-Trains depart according to the schedule and remain active for the duration of their journey. Multiple trains can be in transit simultaneously. The engine uses a lookback algorithm to find all departures whose journey window overlaps the current world time.
+| Field | Description |
+|-------|-------------|
+| `cron` | Cron expression for departure times |
+| `direction` | `"outbound"`, `"return"`, or `"roundtrip"` |
+| `routeNumbers` | Array of route numbers for this trip |
+| `segments` | Array of `{ segmentId }` — segments chained in order |
+
+### Cron Schedule Format
+
+Without Calendaria, cron expressions use 2-3 fields: `minute hour [offset]`
+
+| Expression | Meaning |
+|------------|---------|
+| `0 8` | 8:00 AM daily |
+| `0 8,14,22` | 8:00 AM, 2:00 PM, 10:00 PM daily |
+| `30 */6` | Every 6 hours at :30 |
+| `0 6/48 24` | 6:00 AM every 2 days (48h interval), offset 24h |
+
+With Calendaria installed, full 5-field cron is available: `minute hour day month weekday`
+
+| Expression | Meaning |
+|------------|---------|
+| `0 6 1 * *` | 6:00 AM on the 1st of every month |
+| `0 8 * * 1,5` | 8:00 AM on weekdays 1 and 5 |
+
+Cron field syntax: `*` (every), `1,3,5` (list), `1-5` (range), `*/15` (step), `6/48` (start/step).
 
 ## Events
 
-Events modify train behavior in real time. Manage them via `game.railNetwork.addEvent()`, `game.railNetwork.eventDialog()`, or the Event Manager toolbar button.
+Events modify train behavior in real time. Manage them via the **Event Manager** toolbar button, or programmatically with `game.railNetwork.addEvent()` and the convenience methods `delayTrain()`, `destroyTrain()`, `blockTrack()`.
 
 | Type | Target | Effect |
 |------|--------|--------|
@@ -124,63 +153,43 @@ Events modify train behavior in real time. Manage them via `game.railNetwork.add
 | `halt` | route + departure + station | Specific train stops at named station indefinitely. |
 | `extraDeparture` | route + station | Unscheduled departure from a mid-route station. |
 
-### Event Structure
-
-```js
-{
-  id: "evt-001",
-  type: "blockTrack",
-  target: {
-    routeId: "capital-express",
-    stationName: "Hillford",        // for blockTrack, halt, extraDeparture
-    departureTime: 1234567890,      // for delay, destroy, halt
-  },
-  startTime: 1234000000,           // null = always active
-  endTime: 1234259200,             // null = permanent
-  delayHours: 3,                   // for delay type
-  recoveryRate: 0.5,               // for delay type (hours recovered per real hour)
-  reason: "Bridge washout",        // optional flavor text
-}
-```
+See [API.md](API.md#event-types) for the full event structure and field reference.
 
 ## GM API
 
-Accessible at `game.railNetwork` (or `game.modules.get("rail-network").api`):
+The API is accessible at `game.railNetwork` (or `game.modules.get("rail-network").api`). Key methods:
 
-| Method | Description |
-|--------|-------------|
-| `refresh()` | Force-recalculate all train positions immediately |
-| `status()` | Log routes, active departures, tokens, and events to chat |
-| `routes()` | List all routes with stations, journey times, and schedules |
-| `nextDeparture(routeId)` | Returns `{ routeId, departureTime, inSeconds }` for the next train |
-| `addEvent(event)` | Add a rail event, returns the event ID |
-| `removeEvent(eventId)` | Remove an event by ID |
-| `listEvents(routeId?)` | List events, optionally filtered by route |
-| `clearEvents(routeId?)` | Clear events for a route or all routes |
-| `scheduleEvent(event, date)` | Create a Calendaria note that triggers a rail event |
-| `eventDialog()` | Open the event management dialog |
-| `tagSegment(segmentId, stations, drawingId?)` | Tag a Drawing as a track segment |
-| `editSegment(segmentId)` | Edit an existing segment's station config |
-| `setupDialog(preselectedDoc?)` | Open interactive segment tagging dialog |
-| `installMacros()` | Create hotbar macros in the Macro Directory |
+| Category | Methods |
+|----------|---------|
+| **Train Management** | `refresh()`, `hardRefresh()`, `status()` |
+| **Routes** | `routes()`, `nextDeparture()`, `addRoute()`, `updateRoute()`, `removeRoute()` |
+| **Events** | `addEvent()`, `removeEvent()`, `updateEvent()`, `listEvents()`, `clearEvents()` |
+| **Convenience** | `delayTrain()`, `destroyTrain()`, `blockTrack()` |
+| **Calendaria** | `scheduleEvent()` |
+| **UI Dialogs** | `routeListDialog()`, `routeEditDialog()`, `eventListDialog()`, `eventEditDialog()`, `setupDialog()`, `installMacros()` |
+
+See [API.md](API.md) for detailed method signatures, parameters, and examples.
 
 ## Scene Controls
 
 When logged in as GM, the module adds a **Rail Network** group to the token controls toolbar:
 
-| Button | Icon | Action |
-|--------|------|--------|
-| Refresh Trains | `fa-train` | Force-recalculate all positions |
-| Event Manager | `fa-calendar-exclamation` | Open event creation dialog |
-| Tag Segment | `fa-route` | Tag selected Drawing as a track segment |
-| Route Status | `fa-clipboard-list` | Post route/train/event summary to chat |
+| Tool | Icon | Type | Action |
+|------|------|------|--------|
+| Status | `fa-clipboard-list` | Persistent tool | Click trains or stations on the canvas for contextual info popups |
+| Draw Track | `fa-draw-polygon` | Persistent tool | Switch to polygon drawing mode; auto-opens Tag Segment when done |
+| Tag Segment | `fa-route` | Persistent tool | Click a drawing to open its segment configuration dialog |
+| Manage Routes | `fa-map-signs` | Button | Open the route management dialog |
+| Event Manager | `fa-calendar-exclamation` | Button | Open the event management dialog |
+| Refresh Trains | `fa-train` | Button | Force-recalculate all train positions |
 
 ## Custom Hooks
 
-Other modules and macros can react to rail events via these hooks:
+Other modules and macros can react to rail events. Notification hooks fire once per state change, not on every tick. See [API.md](API.md#hooks) for detailed signatures.
 
 | Hook | Arguments | Fires when... |
 |------|-----------|---------------|
+| `rail-network.ready` | `api` | Module API is fully initialized |
 | `rail-network.trainDeparted` | `routeId, departureTime, stationName, tokenDoc` | A new train is created at its origin station |
 | `rail-network.trainArrived` | `routeId, departureTime, stationName, tokenDoc` | A train reaches a station |
 | `rail-network.trainCompleted` | `routeId, departureTime, tokenDoc` | A train reaches its final destination |
@@ -197,7 +206,12 @@ When [Sequencer](https://github.com/fantasycalendar/FoundryVTT-Sequencer) is ins
 
 ### Calendaria
 
-When [Calendaria](https://github.com/fantasycalendar/FoundryVTT-Calendaria) is installed, you can schedule rail events tied to calendar dates using `game.railNetwork.scheduleEvent(event, date)`. Events trigger automatically when the calendar date is reached.
+When [Calendaria](https://github.com/fantasycalendar/FoundryVTT-Calendaria) is installed:
+
+- **Full cron support** — 5-field cron expressions with day-of-month, month, and day-of-week fields
+- **Calendar-aware formatting** — All times display using the world's calendar (month names, year, proper date format)
+- **Event scheduling** — Schedule rail events tied to calendar dates via `game.railNetwork.scheduleEvent()`
+- **Duration formatting** — Respects non-standard calendar time units (e.g., worlds with 50-minute hours)
 
 ## Development
 
@@ -210,11 +224,11 @@ The module follows a two-layer architecture:
 
 ### Running Tests
 
-The engine has 41 tests using Node.js built-in test runner (no dependencies):
+The module has 120 tests (93 engine, 27 integration) using Node.js built-in test runner (no dependencies):
 
 ```bash
 # Run all tests
-node --test scripts/engine.test.mjs
+npm test
 
 # Run a specific test by name
 node --test --test-name-pattern="chains two segments" scripts/engine.test.mjs

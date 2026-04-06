@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-04-05
+
+### Changed
+- Draw Track is now a persistent tool (no orange border) instead of an action button
+- Station info dialog: split "Upcoming Arrivals" into separate Upcoming Arrivals and Upcoming Departures sections
+- Train info dialog: Station Schedule table now shows Arrival and Departure columns
+- Train info dialog: Route field no longer includes the trip ID
+
+### Added
+- `rail-network.ready` hook: fires when the module API is available, passing the API object
+- Convenience API methods: `delayTrain()`, `destroyTrain()`, `blockTrack()` for ergonomic event injection from other modules
+- `trainDeparted` hook now passes the created `TokenDocument` as the 4th argument (was `null`)
+- Notification hooks (`trainArrived`, `trainDelayed`, `trackBlocked`, `routeClosed`) now fire once per state change instead of every tick
+- Calendaria-aware date/time formatting: when Calendaria is installed, all times use the world's calendar (month names, year, proper date format) instead of generic "Day N, HH:MM"
+- Cron schedule descriptions now show calendar month and weekday names when Calendaria is active
+- Duration formatting respects non-standard calendar time units (e.g. worlds with 50-minute hours)
+- "Post to Chat" button on train and station info dialogs to share status with all players
+
 ## [0.0.10] - 2026-04-05
 
 ### Changed
@@ -138,7 +156,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional Sequencer and Calendaria module integration
 - GitHub Actions release workflow
 
-[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.10...HEAD
+[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.11...HEAD
+[0.0.11]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.10...v0.0.11
 [0.0.10]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.9...v0.0.10
 [0.0.9]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.7...v0.0.8

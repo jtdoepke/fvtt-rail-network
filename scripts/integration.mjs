@@ -35,6 +35,8 @@ const _intendedPositions = new Map();
 
 let _updating = false;
 let _pendingWorldTime = null;
+let _prevHookKeys = new Set();
+let _currentHookKeys = null;
 let _tagSegmentHandler = null;
 let _tagSegmentHoverHandler = null;
 let _tagSegmentHoverHighlight = null;
@@ -119,6 +121,14 @@ function fireHook(hookName, ...args) {
   }
 }
 
+/** Fire a hook only once per unique key per updateAllTrains cycle. */
+function fireHookOnce(hookName, key, ...args) {
+  const fullKey = `${hookName}::${key}`;
+  if (_currentHookKeys) _currentHookKeys.add(fullKey);
+  if (_prevHookKeys.has(fullKey)) return;
+  fireHook(hookName, ...args);
+}
+
 // ---------------------------------------------------------------------------
 // Token Reconciliation
 // ---------------------------------------------------------------------------
@@ -132,6 +142,7 @@ async function updateAllTrains(worldTime) {
     return;
   }
   _updating = true;
+  _currentHookKeys = new Set();
 
   try {
     worldTime = worldTime ?? game.time.worldTime;
@@ -206,7 +217,7 @@ async function updateAllTrains(worldTime) {
 
       // closeLine → skip entirely
       if (activeEvents.some(e => e.type === "closeLine")) {
-        fireHook("routeClosed", normalized.id, activeEvents.find(e => e.type === "closeLine"));
+        fireHookOnce("routeClosed", normalized.id, normalized.id, activeEvents.find(e => e.type === "closeLine"));
         continue;
       }
 
@@ -262,12 +273,12 @@ async function updateAllTrains(worldTime) {
 
         const delayEvt = activeEvents.find(e => e.type === "delay" && e.target.departureTime === dep.departureTime);
         if (delayEvt) {
-          fireHook("trainDelayed", normalized.id, dep.departureTime, computeEffectiveDelay(delayEvt, worldTime), delayEvt);
+          fireHookOnce("trainDelayed", `${normalized.id}::${dep.departureTime}`, normalized.id, dep.departureTime, computeEffectiveDelay(delayEvt, worldTime), delayEvt);
         }
 
         const blockEvt = activeEvents.find(e => e.type === "blockTrack");
         if (blockEvt) {
-          fireHook("trackBlocked", normalized.id, blockEvt.target.stationName, blockEvt);
+          fireHookOnce("trackBlocked", `${normalized.id}::${blockEvt.target.stationName}`, normalized.id, blockEvt.target.stationName, blockEvt);
         }
 
         const pos = getTrainPosition(legs, totalJourneySeconds, adjustedElapsed);
@@ -331,9 +342,9 @@ async function updateAllTrains(worldTime) {
               },
             },
           });
-          toCreate.push({ data: tokenDoc.toObject(), delayed: desired.delayed });
+          toCreate.push({ data: tokenDoc.toObject(), delayed: desired.delayed,
+            routeId: desired.routeId, departureTime: desired.departureTime, atStation: desired.atStation });
         }
-        fireHook("trainDeparted", desired.routeId, desired.departureTime, desired.atStation, null);
       } else {
         // Update token name if it changed
         if (existing.name !== desired.name) {
@@ -353,7 +364,8 @@ async function updateAllTrains(worldTime) {
 
         // Check station arrival
         if (desired.atStation) {
-          fireHook("trainArrived", desired.routeId, desired.departureTime, desired.atStation, existing);
+          fireHookOnce("trainArrived", `${desired.routeId}::${desired.departureTime}::${desired.atStation}`,
+            desired.routeId, desired.departureTime, desired.atStation, existing);
         }
       }
     }
@@ -376,6 +388,7 @@ async function updateAllTrains(worldTime) {
         if (toCreate[i].delayed) {
           await setDelayedStatus(doc, true);
         }
+        fireHook("trainDeparted", toCreate[i].routeId, toCreate[i].departureTime, toCreate[i].atStation, doc);
       }
     }
 
@@ -417,6 +430,8 @@ async function updateAllTrains(worldTime) {
       }
     }
   } finally {
+    _prevHookKeys = _currentHookKeys;
+    _currentHookKeys = null;
     _updating = false;
     if (_pendingWorldTime !== null) {
       const next = _pendingWorldTime;
@@ -450,8 +465,42 @@ function registerSettings() {
 // UI Helpers
 // ---------------------------------------------------------------------------
 
+function getCalendaria() {
+  const calApi = game.modules.get("calendaria")?.api;
+  if (!calApi) return null;
+  try {
+    const cal = calApi.getActiveCalendar();
+    if (!cal) return null;
+    return { api: calApi, cal };
+  } catch { return null; }
+}
+
+function getCalendarInfo() {
+  const c = getCalendaria();
+  if (!c) return undefined;
+  try {
+    return {
+      weekdayNames: c.cal.weekdaysArray.map(w => w.name),
+      monthNames: c.cal.monthsArray.map(m => m.name),
+    };
+  } catch { return undefined; }
+}
+
 function formatWorldTime(t) {
   if (t == null) return "—";
+  const c = getCalendaria();
+  if (c) {
+    try {
+      const comp = c.cal.timeToComponents(t);
+      return c.api.formatDate({
+        year: comp.year + (c.cal.years?.yearZero ?? 0),
+        month: comp.month + 1,
+        day: comp.dayOfMonth + 1,
+        hour: comp.hour,
+        minute: comp.minute,
+      }, 'D MMMM YYYY, HH:mm');
+    } catch { /* fall through */ }
+  }
   const day = Math.floor(t / 86400);
   const hour = Math.floor((t % 86400) / 3600);
   const min = Math.floor((t % 3600) / 60);
@@ -493,11 +542,16 @@ function findStationAtPos(pos, radius = 20) {
 
 function formatDuration(seconds) {
   if (seconds <= 0) return "now";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
+  const c = getCalendaria();
+  const secsPerMin = c?.cal?.days?.secondsPerMinute ?? 60;
+  const minsPerHour = c?.cal?.days?.minutesPerHour ?? 60;
+  const secsPerHour = secsPerMin * minsPerHour;
+  const h = Math.floor(seconds / secsPerHour);
+  const m = Math.floor((seconds % secsPerHour) / secsPerMin);
   if (h > 0 && m > 0) return `${h}h ${m}m`;
   if (h > 0) return `${h}h`;
-  return `${m}m`;
+  if (m > 0) return `${m}m`;
+  return "now";
 }
 
 /**
@@ -591,28 +645,41 @@ async function showTrainInfoDialog(token) {
     finalHtml = `<tr><td><b>Destination</b></td><td>${finalStation} (arrived)</td></tr>`;
   }
 
-  // All stations with arrival times
+  // All stations with arrival and departure times
   const stationRows = [];
-  for (const leg of legs) {
+  const chatStationRows = [];
+  for (let li = 0; li < legs.length; li++) {
+    const leg = legs[li];
     const arrSec = findStationArrivalTime(legs, leg.startStation.station);
+    const depSec = arrSec != null ? arrSec + leg.dwellSeconds : null;
     const isPast = arrSec != null && arrSec <= adjustedElapsed;
     const isCurrent = leg.startStation.station === legInfo.currentStation;
     const style = isCurrent ? 'font-weight:bold;' : isPast ? 'opacity:0.5;' : '';
     const marker = isCurrent ? ' ◀' : '';
-    stationRows.push(`<tr style="${style}"><td>${leg.startStation.station}${marker}</td><td>${arrSec != null ? formatWorldTime(departureTime + arrSec) : '—'}</td></tr>`);
+    const arrDisplay = li === 0 ? '—' : (arrSec != null ? formatWorldTime(departureTime + arrSec) : '—');
+    const depDisplay = depSec != null ? formatWorldTime(departureTime + depSec) : '—';
+    stationRows.push(`<tr style="${style}"><td>${leg.startStation.station}${marker}</td><td>${arrDisplay}</td><td>${depDisplay}</td></tr>`);
+    chatStationRows.push(`<tr><td>${leg.startStation.station}</td><td>${arrDisplay}</td><td>${depDisplay}</td></tr>`);
   }
-  // Final station
+  // Final station (arrival only, no departure)
   const lastLeg = legs[legs.length - 1];
   const finalArr = findStationArrivalTime(legs, lastLeg.endStation.station);
   const isFinalCurrent = lastLeg.endStation.station === legInfo.currentStation;
   const finalStyle = isFinalCurrent ? 'font-weight:bold;' : '';
   const finalMarker = isFinalCurrent ? ' ◀' : '';
-  stationRows.push(`<tr style="${finalStyle}"><td>${lastLeg.endStation.station}${finalMarker}</td><td>${finalArr != null ? formatWorldTime(departureTime + finalArr) : '—'}</td></tr>`);
+  stationRows.push(`<tr style="${finalStyle}"><td>${lastLeg.endStation.station}${finalMarker}</td><td>${finalArr != null ? formatWorldTime(departureTime + finalArr) : '—'}</td><td>—</td></tr>`);
+  chatStationRows.push(`<tr><td>${lastLeg.endStation.station}</td><td>${finalArr != null ? formatWorldTime(departureTime + finalArr) : '—'}</td><td>—</td></tr>`);
+
+  const scheduleTable = `
+    <table style="width:100%;border-collapse:collapse;margin-top:4px;">
+      <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Station</th><th style="text-align:left;">Arrival</th><th style="text-align:left;">Departure</th></tr>
+      ${stationRows.join("")}
+    </table>`;
 
   const content = `
     <table style="width:100%;border-collapse:collapse;">
       <tr><td><b>Train</b></td><td>${token.document.name}</td></tr>
-      <tr><td><b>Route</b></td><td>${normalized.name || "Unnamed Route"} #${routeNum}</td></tr>
+      <tr><td><b>Route</b></td><td>${normalized.name || "Unnamed Route"}</td></tr>
       <tr><td><b>Status</b></td><td>${statusText}${isDelayed ? ' ⏱' : ''}</td></tr>
       <tr><td><b>Departed</b></td><td>${formatWorldTime(departureTime)}</td></tr>
       ${nextStopHtml}
@@ -621,19 +688,40 @@ async function showTrainInfoDialog(token) {
     <hr style="margin:8px 0;">
     <details>
       <summary style="cursor:pointer;font-weight:bold;">Station Schedule</summary>
-      <table style="width:100%;border-collapse:collapse;margin-top:4px;">
-        <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Station</th><th style="text-align:left;">Time</th></tr>
-        ${stationRows.join("")}
-      </table>
+      ${scheduleTable}
     </details>
   `;
 
-  foundry.applications.api.DialogV2.wait({
+  const chatContent = `
+    <h3>Train: ${token.document.name}</h3>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr><td><b>Route</b></td><td>${normalized.name || "Unnamed Route"}</td></tr>
+      <tr><td><b>Status</b></td><td>${statusText}${isDelayed ? ' ⏱' : ''}</td></tr>
+      <tr><td><b>Departed</b></td><td>${formatWorldTime(departureTime)}</td></tr>
+      ${nextStopHtml}
+      ${finalHtml}
+    </table>
+    <hr style="margin:8px 0;">
+    <b>Station Schedule</b>
+    <table style="width:100%;border-collapse:collapse;margin-top:4px;">
+      <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Station</th><th style="text-align:left;">Arrival</th><th style="text-align:left;">Departure</th></tr>
+      ${chatStationRows.join("")}
+    </table>
+  `;
+
+  const result = await foundry.applications.api.DialogV2.wait({
     window: { title: `Train: ${token.document.name}` },
     content,
-    buttons: [{ action: "close", label: "Close", default: true }],
+    buttons: [
+      { action: "chat", label: "Post to Chat" },
+      { action: "close", label: "Close", default: true },
+    ],
     rejectClose: false,
   });
+
+  if (result === "chat") {
+    ChatMessage.create({ content: chatContent });
+  }
 }
 
 async function showStationInfoDialog(stationInfo) {
@@ -643,7 +731,8 @@ async function showStationInfoDialog(stationInfo) {
   const allEvents = game.settings.get(MODULE_ID, "events");
 
   const trainsHere = [];
-  const upcoming = [];
+  const upcomingArrivals = [];
+  const upcomingDepartures = [];
 
   for (const route of routes) {
     const normalized = normalizeSchedule(route);
@@ -684,39 +773,72 @@ async function showStationInfoDialog(stationInfo) {
         }
       }
 
-      // Forward search for upcoming arrivals at this station (next 24h, limit 10)
+      // Determine if station is the final stop (no departure from final station)
+      const isFinalStop = legs[legs.length - 1].endStation?.station === stationName;
+      // Determine station departure time (arrival + dwell at that station)
+      let stationDwell = 0;
+      if (!isFinalStop) {
+        for (let li = 0; li < legs.length; li++) {
+          if (legs[li].startStation.station === stationName) {
+            stationDwell = legs[li].dwellSeconds;
+            break;
+          }
+          if (legs[li].endStation.station === stationName && li + 1 < legs.length) {
+            stationDwell = legs[li + 1].dwellSeconds;
+            break;
+          }
+        }
+      }
+
+      // Forward search for upcoming arrivals/departures at this station (next 24h, limit 10 each)
       const forwardLimit = worldTime + 24 * 3600;
       const parsed = parseCronExpression(trip.cron, false);
       const offset = parsed.offset || 0;
       const currentHour = Math.floor(worldTime / 3600);
       const maxHour = Math.floor(forwardLimit / 3600);
 
-      for (let absHour = currentHour; absHour <= maxHour && upcoming.length < 10; absHour++) {
+      for (let absHour = currentHour; absHour <= maxHour && (upcomingArrivals.length < 10 || upcomingDepartures.length < 10); absHour++) {
         const adjustedHour = absHour - offset;
         if (!parsed.hour.match(adjustedHour)) continue;
         for (let minute = 0; minute < 60; minute++) {
           if (!parsed.minute.match(minute)) continue;
           const depTime = absHour * 3600 + minute * 60;
           if (depTime <= worldTime) continue;
-          // When will this departure arrive at our station?
           const arrivalWorldTime = depTime + stationArrival;
-          if (arrivalWorldTime <= worldTime || arrivalWorldTime > forwardLimit) continue;
           const routeNum = trip.routeNumbers?.[0] ?? "?";
-          upcoming.push({
-            route: normalized.name || "Unnamed Route",
-            routeNum,
-            direction: trip.direction ?? "outbound",
-            arrivalTime: arrivalWorldTime,
-            eta: arrivalWorldTime - worldTime,
-          });
+          const routeName = normalized.name || "Unnamed Route";
+          const dir = trip.direction ?? "outbound";
+
+          // Arrival entry (skip if station is the origin — train starts here, doesn't "arrive")
+          if (stationArrival > 0 && arrivalWorldTime > worldTime && arrivalWorldTime <= forwardLimit && upcomingArrivals.length < 10) {
+            upcomingArrivals.push({
+              route: routeName, routeNum, direction: dir,
+              arrivalTime: arrivalWorldTime,
+              eta: arrivalWorldTime - worldTime,
+            });
+          }
+
+          // Departure entry (skip if station is the final stop — train terminates here)
+          if (!isFinalStop) {
+            const departWorldTime = depTime + stationArrival + stationDwell;
+            if (departWorldTime > worldTime && departWorldTime <= forwardLimit && upcomingDepartures.length < 10) {
+              upcomingDepartures.push({
+                route: routeName, routeNum, direction: dir,
+                departureTime: departWorldTime,
+                eta: departWorldTime - worldTime,
+              });
+            }
+          }
+
           break; // one departure per hour for this pattern
         }
       }
     }
   }
 
-  // Sort upcoming by arrival time
-  upcoming.sort((a, b) => a.arrivalTime - b.arrivalTime);
+  // Sort by time
+  upcomingArrivals.sort((a, b) => a.arrivalTime - b.arrivalTime);
+  upcomingDepartures.sort((a, b) => a.departureTime - b.departureTime);
 
   // Build HTML
   let trainsHtml;
@@ -733,33 +855,56 @@ async function showStationInfoDialog(stationInfo) {
       </table>`;
   }
 
-  let upcomingHtml;
-  if (upcoming.length === 0) {
-    upcomingHtml = `<p style="opacity:0.6;">No upcoming departures in the next 24 hours.</p>`;
+  let arrivalsHtml;
+  if (upcomingArrivals.length === 0) {
+    arrivalsHtml = `<p style="opacity:0.6;">No upcoming arrivals in the next 24 hours.</p>`;
   } else {
-    const rows = upcoming.map(u =>
+    const rows = upcomingArrivals.map(u =>
       `<tr><td>${u.route} #${u.routeNum}</td><td>${u.direction}</td><td>${formatWorldTime(u.arrivalTime)}</td><td>${formatDuration(u.eta)}</td></tr>`
     ).join("");
-    upcomingHtml = `
+    arrivalsHtml = `
       <table style="width:100%;border-collapse:collapse;">
         <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Route</th><th style="text-align:left;">Dir</th><th style="text-align:left;">Arrives</th><th style="text-align:left;">ETA</th></tr>
         ${rows}
       </table>`;
   }
 
-  const content = `
+  let departuresHtml;
+  if (upcomingDepartures.length === 0) {
+    departuresHtml = `<p style="opacity:0.6;">No upcoming departures in the next 24 hours.</p>`;
+  } else {
+    const rows = upcomingDepartures.map(u =>
+      `<tr><td>${u.route} #${u.routeNum}</td><td>${u.direction}</td><td>${formatWorldTime(u.departureTime)}</td><td>${formatDuration(u.eta)}</td></tr>`
+    ).join("");
+    departuresHtml = `
+      <table style="width:100%;border-collapse:collapse;">
+        <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Route</th><th style="text-align:left;">Dir</th><th style="text-align:left;">Departs</th><th style="text-align:left;">ETA</th></tr>
+        ${rows}
+      </table>`;
+  }
+
+  const sections = `
     <h3 style="margin-top:0;">Trains Here</h3>
     ${trainsHtml}
     <h3>Upcoming Arrivals</h3>
-    ${upcomingHtml}
+    ${arrivalsHtml}
+    <h3>Upcoming Departures</h3>
+    ${departuresHtml}
   `;
 
-  foundry.applications.api.DialogV2.wait({
+  const result = await foundry.applications.api.DialogV2.wait({
     window: { title: `Station: ${stationName}` },
-    content,
-    buttons: [{ action: "close", label: "Close", default: true }],
+    content: sections,
+    buttons: [
+      { action: "chat", label: "Post to Chat" },
+      { action: "close", label: "Close", default: true },
+    ],
     rejectClose: false,
   });
+
+  if (result === "chat") {
+    ChatMessage.create({ content: `<h3>Station: ${stationName}</h3>${sections}` });
+  }
 }
 
 function buildSegmentOptions(selectedId) {
@@ -846,7 +991,7 @@ const api = {
     const managed = canvas.scene?.tokens?.filter(t => t.flags?.[MODULE_ID]?.managed) ?? [];
 
     const lines = [`<h3>Rail Network Status</h3>`];
-    lines.push(`<b>World Time:</b> ${worldTime} (${Math.floor(worldTime / 86400)}d ${Math.floor((worldTime % 86400) / 3600)}h)`);
+    lines.push(`<b>World Time:</b> ${worldTime} (${formatWorldTime(worldTime)})`);
     lines.push(`<b>Routes:</b> ${routes.length}`);
     lines.push(`<b>Active Events:</b> ${events.length}`);
     lines.push(`<b>Managed Tokens:</b> ${managed.length}`);
@@ -865,7 +1010,7 @@ const api = {
         const { legs, totalJourneySeconds } = buildRouteSegments(directedPath);
         const stationNames = legs.map(l => l.startStation.station);
         stationNames.push(legs[legs.length - 1].endStation.station);
-        const desc = describeCronExpression(trip.cron, false);
+        const desc = describeCronExpression(trip.cron, !!getCalendaria(), getCalendarInfo());
         const routeNums = trip.routeNumbers?.join(", ") || "?";
         const routeLabel = normalized.name || "Unnamed Route";
         if (tripCount === 0) lines.push(`<br><b>${routeLabel}</b> (${actorName}):`);
@@ -981,6 +1126,41 @@ const api = {
     events[idx] = { ...event, id: eventId };
     await game.settings.set(MODULE_ID, "events", events);
     updateAllTrains(game.time.worldTime);
+  },
+
+  /** Convenience: delay a specific departure. Returns event ID. */
+  async delayTrain(routeId, departureTime, delayHours, opts = {}) {
+    return this.addEvent({
+      type: "delay",
+      target: { routeId, departureTime },
+      startTime: opts.startTime ?? game.time.worldTime,
+      endTime: opts.endTime ?? null,
+      delayHours,
+      recoveryRate: opts.recoveryRate,
+      reason: opts.reason,
+    });
+  },
+
+  /** Convenience: destroy (cancel) a specific departure. Returns event ID. */
+  async destroyTrain(routeId, departureTime, opts = {}) {
+    return this.addEvent({
+      type: "destroy",
+      target: { routeId, departureTime },
+      startTime: opts.startTime ?? game.time.worldTime,
+      endTime: opts.endTime ?? null,
+      reason: opts.reason,
+    });
+  },
+
+  /** Convenience: block all trains at a station. Returns event ID. */
+  async blockTrack(routeId, stationName, opts = {}) {
+    return this.addEvent({
+      type: "blockTrack",
+      target: { routeId, stationName },
+      startTime: opts.startTime ?? game.time.worldTime,
+      endTime: opts.endTime ?? null,
+      reason: opts.reason,
+    });
   },
 
   /** Add a route to the world settings. */
@@ -1574,7 +1754,7 @@ const api = {
         segChain += `<select name="trip_${tripIdx}_seg_${s}" style="width:140px;">${opts}</select>`;
       }
 
-      const desc = describeCronExpression(trip.cron ?? "0 6", hasCalendaria);
+      const desc = describeCronExpression(trip.cron ?? "0 6", hasCalendaria, getCalendarInfo());
 
       return `
         <div class="trip-block" data-trip="${tripIdx}" style="border:1px solid var(--color-border-light);border-radius:4px;padding:8px;margin-bottom:8px;">
@@ -1751,7 +1931,7 @@ const api = {
             const offset = tripBlock.querySelector(`[name="trip_${idx}_offset"]`)?.value ?? "0";
             cron = offset && offset !== "0" ? `${min} ${hour} ${offset}` : `${min} ${hour}`;
           }
-          const desc = describeCronExpression(cron, hasCalendaria);
+          const desc = describeCronExpression(cron, hasCalendaria, getCalendarInfo());
           const descEl = tripBlock.querySelector(".trip-desc");
           if (descEl) descEl.textContent = `→ ${desc}`;
         };
@@ -1918,7 +2098,7 @@ const api = {
       const normalized = normalizeSchedule(r);
       const tripCount = normalized.schedule.length;
       const schedSummary = normalized.schedule.map(t => {
-        const desc = describeCronExpression(t.cron, false);
+        const desc = describeCronExpression(t.cron, !!getCalendaria(), getCalendarInfo());
         let dirLabel;
         try {
           const path = resolveRouteWithDrawings({ segments: t.segments }, game.time.worldTime);
@@ -2045,6 +2225,8 @@ Hooks.once("ready", () => {
     if (game.user.isGM) return; // GM already fired locally
     Hooks.callAll(`${MODULE_ID}.${data.type}`, ...data.args);
   });
+
+  Hooks.callAll(`${MODULE_ID}.ready`, api);
 });
 
 Hooks.on("updateWorldTime", (worldTime, dt, options, userId) => {
@@ -2246,14 +2428,24 @@ Hooks.on("deleteDrawing", (drawing, options, userId) => {
   }
 });
 
-// Clear Draw Track flag when user switches away from the drawings polygon tool
+// Handle Draw Track tool activation/deactivation
 Hooks.on("renderSceneControls", (app, element, data) => {
-  if (!_awaitingDrawTrack) return;
   const change = data.activationChange;
   if (!change) return;
+
+  // When Draw Track tool is selected, switch to polygon drawing mode
   if (change.controlChange || change.toolChange) {
-    const isDrawingPolygon = ui.controls?.activeControl === "drawings" && ui.controls?.activeTool === "polygon";
-    if (!isDrawingPolygon) _awaitingDrawTrack = false;
+    const isDrawTrack = ui.controls?.activeControl === MODULE_ID && ui.controls?.activeTool === "draw-track";
+    if (isDrawTrack && !_awaitingDrawTrack) {
+      _awaitingDrawTrack = true;
+      ui.controls.render({ control: "drawings", tool: "polygon" });
+      return;
+    }
+    // Clear flag when user switches away from drawings polygon tool
+    if (_awaitingDrawTrack) {
+      const isDrawingPolygon = ui.controls?.activeControl === "drawings" && ui.controls?.activeTool === "polygon";
+      if (!isDrawingPolygon) _awaitingDrawTrack = false;
+    }
   }
 });
 
@@ -2278,11 +2470,7 @@ Hooks.on("getSceneControlButtons", (controls) => {
         order: 2,
         title: "Draw Track",
         icon: "fa-solid fa-draw-polygon",
-        onClick: () => {
-          _awaitingDrawTrack = true;
-          ui.controls.render({ control: "drawings", tool: "polygon" });
-        },
-        button: true,
+        // Persistent tool — selecting it switches to polygon drawing mode
       },
       "tag-segment": {
         name: "tag-segment",

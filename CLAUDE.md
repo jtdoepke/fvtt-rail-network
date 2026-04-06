@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Foundry VTT v13+ module (`rail-network`) that animates train tokens along drawn routes based on in-game time (`game.time.worldTime`). Trains follow configurable schedules, respond to events (delays, blockages, closures), and optionally integrate with the Sequencer and Calendaria modules. Setting-agnostic — works with any game world's rail/transit network.
+Foundry VTT v14+ module (`rail-network`) that animates train tokens along drawn routes based on in-game time (`game.time.worldTime`). Trains follow configurable schedules, respond to events (delays, blockages, closures), and optionally integrate with the Sequencer and Calendaria modules. Setting-agnostic — works with any game world's rail/transit network.
 
 ## Commands
 
@@ -26,8 +26,9 @@ No build step, no linting configured. Tests use Node.js built-in test runner via
 module.json               — Foundry module manifest (id: "rail-network")
 scripts/
   engine.mjs              — Pure computation functions (no Foundry dependency)
-  engine.test.mjs         — 41 tests using node:test and node:assert/strict
-  integration.mjs         — Foundry hooks, settings, token lifecycle, GM API (fully implemented)
+  engine.test.mjs         — Engine tests using node:test and node:assert/strict
+  integration.mjs         — Foundry hooks, settings, token lifecycle, GM API
+  integration.test.mjs    — Integration layer tests (with Foundry mocks)
 ```
 
 Only `module.json` and `scripts/` are shipped in the release zip.
@@ -73,7 +74,15 @@ When segments chain, the last station of segment A and first of segment B are du
 
 ### Changelog
 
-Maintain `CHANGELOG.md` using [Keep a Changelog](https://keepachangelog.com/) format. When making user-facing changes, add an entry under `## [Unreleased]` in the appropriate category: Added, Changed, Deprecated, Removed, Fixed, Security. At release time, the `[Unreleased]` section becomes the new version heading.
+Maintain `CHANGELOG.md` using [Keep a Changelog](https://keepachangelog.com/) format. When making user-facing changes, add an entry under `## [Unreleased]` in the appropriate category: Added, Changed, Deprecated, Removed, Fixed, Security.
+
+### Releasing
+
+1. Move the `[Unreleased]` section in `CHANGELOG.md` to a new version heading (e.g. `## [0.0.11] - 2026-04-05`) and add the comparison link at the bottom.
+2. Commit the changelog update.
+3. Create an annotated git tag with the changelog contents as the message: `git tag -a v0.0.11 -m "$(changelog contents for this version)"`.
+4. Push the commit and tag: `git push && git push --tags`.
+5. Create a GitHub release: `gh release create v0.0.11 --title "v0.0.11 — Short description" --notes-file -` (pipe the changelog section as notes). The release workflow handles building and uploading the module zip.
 
 ### CI/CD
 
