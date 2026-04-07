@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.17] - 2026-04-06
+
 ### Added
 
 - Time Controls button in the Rail Network control group (step forward/back with adjustable increments, play/pause at configurable rate). Hidden when Calendaria is installed.
@@ -251,7 +253,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional Sequencer and Calendaria module integration
 - GitHub Actions release workflow
 
-[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.16...HEAD
+[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.17...HEAD
+[0.0.17]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.16...v0.0.17
 [0.0.16]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.15...v0.0.16
 [0.0.15]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.14...v0.0.15
 [0.0.14]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.13...v0.0.14
