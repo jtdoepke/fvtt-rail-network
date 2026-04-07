@@ -7,12 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-04-06
+
 ### Changed
 
 - Manage Routes dialog now shows a meaningful summary for wandering routes (start station, destination count, segment count) instead of "0" trips and "—"
 
 ### Fixed
 
+- Status tool now works for wandering route trains (Train Info and Station Info dialogs use `computeWanderingWalk` instead of resolving empty trip segments)
+- Wandering routes now auto-create a default departure trip (daily at 06:00) when switching to wander mode with no trips, preventing empty schedules that produce no trains
+- Route edit dialog now shows wander-specific description for the Trips section
 - Improved table row contrast across all dialogs (Tag Segment, Station Weights, Route List, Event List, Train Info, Station Info) so input fields are visually distinct from row backgrounds
 
 ## [0.0.15] - 2026-04-06
@@ -233,7 +238,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional Sequencer and Calendaria module integration
 - GitHub Actions release workflow
 
-[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.15...HEAD
+[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.16...HEAD
+[0.0.16]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.15...v0.0.16
 [0.0.15]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.14...v0.0.15
 [0.0.14]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.13...v0.0.14
 [0.0.13]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.12...v0.0.13

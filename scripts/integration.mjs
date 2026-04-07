@@ -734,16 +734,41 @@ async function showTrainInfoDialog(token) {
   const normalized = normalizeSchedule(route);
   const activeEvents = getActiveEvents(allEvents, routeId, worldTime);
 
-  // Find the matching trip by routeNum
-  let matchedTrip = normalized.schedule.find((t) => t.routeNumbers?.includes(routeNum));
-  if (!matchedTrip) matchedTrip = normalized.schedule[0];
-  if (!matchedTrip) return;
+  let legs;
+  if (normalized.type === "wander") {
+    // Wandering route: compute walk from network config
+    const singleSegResolver = (segmentId) => {
+      if (_pathCache.has(segmentId)) return _pathCache.get(segmentId);
+      const drawing = canvas.drawings?.placeables?.find((d) => d.document.flags?.[MODULE_ID]?.segmentId === segmentId);
+      if (drawing) {
+        const path = drawingToPath(drawing.document);
+        _pathCache.set(segmentId, path);
+        return path;
+      }
+      return null;
+    };
+    const walkResult = computeWanderingWalk(
+      normalized.network,
+      departureTime,
+      normalized.id,
+      singleSegResolver,
+      getPixelsPerHour(normalized),
+    );
+    if (!walkResult || walkResult.legs.length === 0) return;
+    legs = walkResult.legs;
+  } else {
+    // Fixed route: find matching trip by routeNum
+    let matchedTrip = normalized.schedule.find((t) => t.routeNumbers?.includes(routeNum));
+    if (!matchedTrip) matchedTrip = normalized.schedule[0];
+    if (!matchedTrip) return;
 
-  const path = resolveRouteWithDrawings({ segments: matchedTrip.segments }, worldTime);
-  if (!path || path.length < 2) return;
-  const directedPath = applyDirection(path, matchedTrip.direction);
-  const { legs } = buildRouteSegments(directedPath, getPixelsPerHour(normalized));
-  if (legs.length === 0) return;
+    const path = resolveRouteWithDrawings({ segments: matchedTrip.segments }, worldTime);
+    if (!path || path.length < 2) return;
+    const directedPath = applyDirection(path, matchedTrip.direction);
+    const result = buildRouteSegments(directedPath, getPixelsPerHour(normalized));
+    if (result.legs.length === 0) return;
+    legs = result.legs;
+  }
 
   const elapsed = worldTime - departureTime;
   const { adjustedElapsed } = applyEvents(activeEvents, departureTime, elapsed, legs, worldTime);
@@ -886,11 +911,120 @@ async function showStationInfoDialog(stationInfo) {
     const activeEvents = getActiveEvents(allEvents, normalized.id, worldTime);
     if (activeEvents.some((e) => e.type === "closeLine")) continue;
 
-    for (const trip of normalized.schedule) {
+    const isWander = normalized.type === "wander";
+
+    // Build a single-segment resolver for wandering routes
+    const wanderSegResolver = isWander
+      ? (segmentId) => {
+          if (_pathCache.has(segmentId)) return _pathCache.get(segmentId);
+          const drawing = canvas.drawings?.placeables?.find(
+            (d) => d.document.flags?.[MODULE_ID]?.segmentId === segmentId,
+          );
+          if (drawing) {
+            const path = drawingToPath(drawing.document);
+            _pathCache.set(segmentId, path);
+            return path;
+          }
+          return null;
+        }
+      : null;
+
+    // For wander routes, compute walks per active departure
+    // For fixed routes, iterate trips and resolve segment paths
+    const tripEntries = isWander ? [null] : normalized.schedule;
+
+    for (const trip of tripEntries) {
+      let legs, totalJourneySeconds, deps;
+
+      if (isWander) {
+        // Get all active departures from the schedule
+        const maxJourney = (normalized.network?.maxHours || 24) * 3600;
+        deps = findAllActiveDepartures(worldTime, normalized.schedule, maxJourney);
+
+        // Process each active departure with its own wander walk
+        for (const dep of deps) {
+          const walkResult = computeWanderingWalk(
+            normalized.network,
+            dep.departureTime,
+            normalized.id,
+            wanderSegResolver,
+            getPixelsPerHour(normalized),
+          );
+          if (!walkResult || walkResult.legs.length === 0) continue;
+
+          const wLegs = walkResult.legs;
+          const wTotal = walkResult.totalJourneySeconds;
+          const stationArrival = findStationArrivalTime(wLegs, stationName);
+          if (stationArrival == null) continue;
+
+          const { adjustedElapsed, skip } = applyEvents(activeEvents, dep.departureTime, dep.elapsed, wLegs, worldTime);
+          if (skip) continue;
+
+          const pos = getTrainPosition(wLegs, wTotal, adjustedElapsed);
+          if (pos?.atStation === stationName) {
+            const routeNum = dep.routeNum ?? "?";
+            const nameTemplate = normalized.nameTemplate ?? "[[name]] [[routeNum]]";
+            const protoName = actor?.prototypeToken?.name ?? actor?.name ?? "Unknown";
+            const tokenName = nameTemplate
+              .replace("[[name]]", normalized.name || "Unnamed Route")
+              .replace("[[actor]]", protoName)
+              .replace("[[routeNum]]", routeNum);
+            trainsHere.push({
+              name: tokenName,
+              route: normalized.name || "Unnamed Route",
+              routeNum,
+              direction: "wander",
+            });
+          }
+
+          const routeNum = dep.routeNum ?? "?";
+          const routeName = normalized.name || "Unnamed Route";
+
+          if (stationArrival > 0 && adjustedElapsed < stationArrival && upcomingArrivals.length < 10) {
+            const eta = stationArrival - adjustedElapsed;
+            upcomingArrivals.push({
+              route: routeName,
+              routeNum,
+              direction: "wander",
+              arrivalTime: worldTime + eta,
+              eta,
+            });
+          }
+
+          // Determine dwell at this station
+          const isFinalStop = wLegs[wLegs.length - 1].endStation?.station === stationName;
+          let stationDwell = 0;
+          if (!isFinalStop) {
+            for (let li = 0; li < wLegs.length; li++) {
+              if (wLegs[li].startStation.station === stationName) {
+                stationDwell = wLegs[li].dwellSeconds;
+                break;
+              }
+              if (wLegs[li].endStation.station === stationName && li + 1 < wLegs.length) {
+                stationDwell = wLegs[li + 1].dwellSeconds;
+                break;
+              }
+            }
+          }
+          const stationDepartureElapsed = stationArrival + stationDwell;
+          if (!isFinalStop && adjustedElapsed < stationDepartureElapsed && upcomingDepartures.length < 10) {
+            const eta = stationDepartureElapsed - adjustedElapsed;
+            upcomingDepartures.push({
+              route: routeName,
+              routeNum,
+              direction: "wander",
+              departureTime: worldTime + eta,
+              eta,
+            });
+          }
+        }
+        continue; // skip the fixed-route logic below
+      }
+
       const path = resolveRouteWithDrawings({ segments: trip.segments }, worldTime);
       if (!path || path.length < 2) continue;
       const directedPath = applyDirection(path, trip.direction);
-      const { legs, totalJourneySeconds } = buildRouteSegments(directedPath, getPixelsPerHour(normalized));
+      ({ legs, totalJourneySeconds } = buildRouteSegments(directedPath, getPixelsPerHour(normalized)));
       if (legs.length === 0) continue;
 
       // Check if this trip's route passes through our station
@@ -898,7 +1032,7 @@ async function showStationInfoDialog(stationInfo) {
       if (stationArrival == null) continue;
 
       // Check active departures for trains currently here
-      const deps = findAllActiveDepartures(worldTime, [trip], totalJourneySeconds);
+      deps = findAllActiveDepartures(worldTime, [trip], totalJourneySeconds);
       for (const dep of deps) {
         const { adjustedElapsed } = applyEvents(activeEvents, dep.departureTime, dep.elapsed, legs, worldTime);
         const pos = getTrainPosition(legs, totalJourneySeconds, adjustedElapsed);
@@ -2271,7 +2405,8 @@ const api = {
           <button type="button" data-action="add-trip" style="float:right;">+ Add Trip</button>
         </h3>
         <div style="margin:4px 0 8px;font-size:0.85em;opacity:0.7;">
-          <p style="margin:0 0 6px;">Each trip defines when a train departs, which direction it travels, and which track segments it follows. ${cronHelp}</p>
+          <p class="trips-desc" style="margin:0 0 6px;">Each trip defines when a train departs, which direction it travels, and which track segments it follows. ${cronHelp}</p>
+          <p class="trips-desc-wander" style="margin:0 0 6px;display:none;">Each trip defines when a wandering train departs. The route is chosen randomly based on station weights. ${cronHelp}</p>
           <details style="margin-bottom:4px;">
             <summary style="cursor:pointer;font-weight:bold;">Schedule field syntax</summary>
             <table style="margin:4px 0;border-collapse:collapse;font-size:0.95em;">
@@ -2413,6 +2548,11 @@ const api = {
         const updateRouteType = () => {
           const wander = typeSelect.value === "wander";
           networkSection.style.display = wander ? "" : "none";
+          // Toggle trip description text
+          const tripsDesc = form.querySelector(".trips-desc");
+          const tripsDescWander = form.querySelector(".trips-desc-wander");
+          if (tripsDesc) tripsDesc.style.display = wander ? "none" : "";
+          if (tripsDescWander) tripsDescWander.style.display = wander ? "" : "none";
           // Rebuild network section content when switching to wander
           if (wander && !networkSection.querySelector(".network-segments")) {
             networkSection.querySelector(".network-content").innerHTML = buildNetworkSection();
@@ -2428,6 +2568,21 @@ const api = {
             if (dirField) dirField.style.display = wander ? "none" : "";
             if (segArea) segArea.style.display = wander ? "none" : "";
           });
+          // Auto-add a default trip if switching to wander with no trips
+          if (wander && form.querySelectorAll(".trip-block").length === 0) {
+            const container = form.querySelector(".trips-container");
+            const idx = nextTripIdx++;
+            const defaultTrip = { cron: "0 6", routeNumbers: [], direction: "outbound", segments: [] };
+            const tmp = document.createElement("div");
+            tmp.innerHTML = buildTripBlock(idx, defaultTrip);
+            container.appendChild(tmp.firstElementChild);
+            // Hide direction/segment fields on the new block
+            const block = container.lastElementChild;
+            const dirField = block.querySelector(`[name$="_dir"]`)?.closest("div");
+            const segArea = block.querySelector(".seg-chain")?.closest("div");
+            if (dirField) dirField.style.display = "none";
+            if (segArea) segArea.style.display = "none";
+          }
         };
         typeSelect.addEventListener("change", updateRouteType);
         // Initial state
