@@ -59,6 +59,10 @@ In `integration.mjs`, `resolveRouteWithDrawings()` bridges scene Drawings into t
 - **Scene geometry** (Drawing flags under `rail-network` scope): Track paths, station positions, waypoint curves
 - **Service config** (module world settings `rail-network.routes` / `rail-network.events`): Schedules, naming, token prototypes
 
+### Dialog table styling
+
+All data tables in dialogs use the shared `TABLE_ROW_STYLES` constant and the `rail-table` CSS class for consistent alternating row contrast. When adding new tables to dialogs, add `class="rail-table"` to the `<table>` element and include `<style>${TABLE_ROW_STYLES}</style>` in the dialog content.
+
 ### Coordinate model
 
 Foundry Drawing `shape.points` is a flat array `[x0, y0, x1, y1, ...]` relative to `document.x, document.y`. Absolute position: `{ x: doc.x + points[i*2], y: doc.y + points[i*2+1] }`.

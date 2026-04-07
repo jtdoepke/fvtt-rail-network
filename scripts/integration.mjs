@@ -32,6 +32,13 @@ const MODULE_ID = "rail-network";
 /** @type {Map<string, Array>} segmentId → path array */
 const _pathCache = new Map();
 
+/** Shared CSS for alternating table row contrast used across dialogs. */
+const TABLE_ROW_STYLES = `
+  .rail-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.06); }
+  .rail-table tbody tr:nth-child(odd) { background: rgba(0, 0, 0, 0.15); }
+  .rail-table input { background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.3); }
+`;
+
 /** @type {Map<string, {legs, totalJourneySeconds}>} "routeId::departureTime" → walk result */
 const _wanderWalkCache = new Map();
 
@@ -809,7 +816,8 @@ async function showTrainInfoDialog(token) {
   );
 
   const scheduleTable = `
-    <table style="width:100%;border-collapse:collapse;margin-top:4px;">
+    <style>${TABLE_ROW_STYLES}</style>
+    <table class="rail-table" style="width:100%;border-collapse:collapse;margin-top:4px;">
       <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Station</th><th style="text-align:left;">Arrival</th><th style="text-align:left;">Departure</th></tr>
       ${stationRows.join("")}
     </table>`;
@@ -1035,7 +1043,7 @@ async function showStationInfoDialog(stationInfo) {
       .map((t) => `<tr><td>${t.name}</td><td>${t.route} #${t.routeNum}</td><td>${t.direction}</td></tr>`)
       .join("");
     trainsHtml = `
-      <table style="width:100%;border-collapse:collapse;">
+      <table class="rail-table" style="width:100%;border-collapse:collapse;">
         <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Train</th><th style="text-align:left;">Route</th><th style="text-align:left;">Dir</th></tr>
         ${rows}
       </table>`;
@@ -1052,7 +1060,7 @@ async function showStationInfoDialog(stationInfo) {
       )
       .join("");
     arrivalsHtml = `
-      <table style="width:100%;border-collapse:collapse;">
+      <table class="rail-table" style="width:100%;border-collapse:collapse;">
         <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Route</th><th style="text-align:left;">Dir</th><th style="text-align:left;">Arrives</th><th style="text-align:left;">ETA</th></tr>
         ${rows}
       </table>`;
@@ -1069,13 +1077,14 @@ async function showStationInfoDialog(stationInfo) {
       )
       .join("");
     departuresHtml = `
-      <table style="width:100%;border-collapse:collapse;">
+      <table class="rail-table" style="width:100%;border-collapse:collapse;">
         <tr style="border-bottom:1px solid var(--color-border-light);"><th style="text-align:left;">Route</th><th style="text-align:left;">Dir</th><th style="text-align:left;">Departs</th><th style="text-align:left;">ETA</th></tr>
         ${rows}
       </table>`;
   }
 
   const sections = `
+    <style>${TABLE_ROW_STYLES}</style>
     <h3 style="margin-top:0;">Trains Here</h3>
     ${trainsHtml}
     <h3>Upcoming Arrivals</h3>
@@ -1763,7 +1772,8 @@ const api = {
     }
 
     const content = `
-      <table style="width:100%;border-collapse:collapse;font-size:0.9em;">
+      <style>${TABLE_ROW_STYLES}</style>
+      <table class="rail-table" style="width:100%;border-collapse:collapse;font-size:0.9em;">
         <thead>
           <tr style="border-bottom:1px solid var(--color-border-light);">
             <th style="text-align:left;">Type</th>
@@ -1923,12 +1933,10 @@ const api = {
 
     const content = `
       <style>
+        ${TABLE_ROW_STYLES}
         .rail-segment-table thead { position: sticky; top: 0; background: var(--color-cool-5); z-index: 1; }
-        .rail-segment-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.06); }
-        .rail-segment-table tbody tr:nth-child(odd) { background: rgba(0, 0, 0, 0.15); }
         .rail-segment-table tbody tr:hover { background: rgba(255, 200, 0, 0.15); cursor: pointer; }
         .rail-segment-table input[type="text"]:not(:placeholder-shown) { font-weight: bold; }
-        .rail-segment-table input { background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.3); }
       </style>
       <form>
         <div class="form-group">
@@ -1936,7 +1944,7 @@ const api = {
           <input type="text" name="segmentId" value="${existingFlags.segmentId ?? ""}" required
                  placeholder="e.g. sharn-wroat">
         </div>
-        <table class="rail-segment-table">
+        <table class="rail-segment-table rail-table">
           <thead>
             <tr><th>#</th><th>Position</th><th>Dist</th><th>Name</th><th>Hours from Prev</th><th>Dwell (min)</th></tr>
           </thead>
@@ -2186,7 +2194,7 @@ const api = {
         <div class="form-group">
           <label>Station Weights</label>
           <p class="hint" style="font-size:0.85em;opacity:0.7;margin:2px 0 6px;">Set a positive weight for each station the train may choose as a destination. Stations without a weight are never chosen but may be traversed en route.</p>
-          <table class="station-weights-table" style="border-collapse:collapse;width:100%;">
+          <table class="station-weights-table rail-table" style="border-collapse:collapse;width:100%;">
             <thead><tr><th style="text-align:left;padding:4px 8px;">Station</th><th style="text-align:left;padding:4px 8px;">Weight</th></tr></thead>
             <tbody>${weightRows || '<tr><td colspan="2" style="padding:4px 8px;opacity:0.6;"><em>Select segments above to see stations</em></td></tr>'}</tbody>
           </table>
@@ -2195,9 +2203,7 @@ const api = {
 
     const content = `
       <style>
-        .station-weights-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.06); }
-        .station-weights-table tbody tr:nth-child(odd) { background: rgba(0, 0, 0, 0.15); }
-        .station-weights-table input { background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.3); }
+        ${TABLE_ROW_STYLES}
       </style>
       <form>
         <input type="hidden" name="id" value="${existing?.id ?? ""}">
@@ -2722,7 +2728,8 @@ const api = {
     }
 
     const content = `
-      <table style="width:100%;border-collapse:collapse;">
+      <style>${TABLE_ROW_STYLES}</style>
+      <table class="rail-table" style="width:100%;border-collapse:collapse;">
         <thead>
           <tr style="border-bottom:1px solid var(--color-border-light);">
             <th style="text-align:left;">Route</th>
