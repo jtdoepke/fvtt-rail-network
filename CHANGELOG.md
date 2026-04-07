@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Manage Routes dialog: added Type column (Scheduled/Wander), reordered columns, Trips column now shows a count for all route types, and Actor name is clickable to open the actor sheet
 - Wandering route PRNG seed now includes the trip index, so multiple trips at the same departure time produce different random walks
 
 ### Fixed

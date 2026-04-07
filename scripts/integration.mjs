@@ -2862,16 +2862,15 @@ const api = {
     let rows = "";
     for (const r of routes) {
       const normalized = normalizeSchedule(r);
-      let tripCount;
+      const typeLabel = r.type === "wander" ? "Wander" : "Scheduled";
+      const tripCount = normalized.schedule.length;
       let schedSummary;
       if (r.type === "wander") {
         const net = r.network ?? {};
         const destCount = Object.values(net.weights ?? {}).filter((w) => w > 0).length;
-        tripCount = "Wander";
         schedSummary = `From ${net.startStation || "?"}, ${destCount} destination${destCount !== 1 ? "s" : ""}, ${(net.segments ?? []).length} segment${(net.segments ?? []).length !== 1 ? "s" : ""}`;
         if (net.maxHours > 0) schedSummary += `, max ${net.maxHours}h`;
       } else {
-        tripCount = normalized.schedule.length;
         schedSummary = normalized.schedule
           .map((t) => {
             const desc = describeCronExpression(t.cron, !!getCalendaria(), getCalendarInfo());
@@ -2890,12 +2889,16 @@ const api = {
           })
           .join("; ");
       }
+      const actorCell = r.actorId
+        ? `<a class="actor-link" data-actor-id="${r.actorId}">${game.actors.get(r.actorId)?.name ?? "Unknown Actor"}</a>`
+        : "No actor";
       rows += `
         <tr>
           <td>${r.name || "Unnamed Route"}</td>
-          <td>${r.actorId ? (game.actors.get(r.actorId)?.name ?? "Unknown Actor") : "No actor"}</td>
+          <td>${typeLabel}</td>
           <td>${tripCount}</td>
           <td>${schedSummary || "—"}</td>
+          <td>${actorCell}</td>
           <td style="white-space:nowrap;">
             <button type="button" class="route-edit" data-id="${r.id}">Edit</button>
             <button type="button" class="route-delete" data-id="${r.id}" data-name="${r.name || ""}">Delete</button>
@@ -2904,18 +2907,22 @@ const api = {
     }
 
     if (routes.length === 0) {
-      rows = `<tr><td colspan="5" style="text-align:center;font-style:italic;">No routes configured. Create an Actor to represent your train first, then add a route.</td></tr>`;
+      rows = `<tr><td colspan="6" style="text-align:center;font-style:italic;">No routes configured. Create an Actor to represent your train first, then add a route.</td></tr>`;
     }
 
     const content = `
-      <style>${TABLE_ROW_STYLES}</style>
+      <style>${TABLE_ROW_STYLES}
+        .rail-table .actor-link { cursor: pointer; text-decoration: underline; }
+        .rail-table .actor-link:hover { text-decoration: none; }
+      </style>
       <table class="rail-table" style="width:100%;border-collapse:collapse;">
         <thead>
           <tr style="border-bottom:1px solid var(--color-border-light);">
             <th style="text-align:left;">Route</th>
-            <th style="text-align:left;">Actor</th>
+            <th>Type</th>
             <th>Trips</th>
             <th style="text-align:left;">Schedule</th>
+            <th style="text-align:left;">Actor</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -2931,6 +2938,13 @@ const api = {
       render: (event, dialog) => {
         const el = dialog.element;
         if (!el) return;
+
+        el.querySelectorAll(".actor-link").forEach((link) => {
+          link.addEventListener("click", () => {
+            const actor = game.actors.get(link.dataset.actorId);
+            actor?.sheet.render(true);
+          });
+        });
 
         el.querySelectorAll(".route-edit").forEach((btn) => {
           btn.addEventListener("click", async () => {
