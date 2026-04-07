@@ -1924,9 +1924,10 @@ const api = {
     const content = `
       <style>
         .rail-segment-table thead { position: sticky; top: 0; background: var(--color-cool-5); z-index: 1; }
+        .rail-segment-table tbody tr:nth-child(odd) { background: rgba(0, 0, 0, 0.15); }
         .rail-segment-table tbody tr:hover { background: rgba(255, 200, 0, 0.15); cursor: pointer; }
         .rail-segment-table input[type="text"]:not(:placeholder-shown) { font-weight: bold; }
-        .rail-segment-table input { background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.2); }
+        .rail-segment-table input { background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.25); }
       </style>
       <form>
         <div class="form-group">
@@ -2192,6 +2193,10 @@ const api = {
     }
 
     const content = `
+      <style>
+        .station-weights-table tbody tr:nth-child(odd) { background: rgba(0, 0, 0, 0.15); }
+        .station-weights-table input { background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.25); }
+      </style>
       <form>
         <input type="hidden" name="id" value="${existing?.id ?? ""}">
         <div class="form-group">
