@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Hover labels on the Rail Network Status tool: train token names and station names now appear above the highlight when hovered
 
+### Changed
+
+- Redesigned Time Controls dialog: set a target day and time, choose a step size, and playback advances automatically toward the target (replaces separate Step and Playback sections)
+
 ## [0.0.17] - 2026-04-06
 
 ### Added

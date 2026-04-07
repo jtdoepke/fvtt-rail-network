@@ -3077,7 +3077,7 @@ const api = {
     ui.notifications.info("Rail Network macros installed.");
   },
 
-  /** Open a dialog with time step and playback controls. */
+  /** Open a dialog with target-time controls that advance in steps. */
   async timeControlDialog() {
     function stopPlayback() {
       if (_timePlaybackInterval) {
@@ -3085,6 +3085,11 @@ const api = {
         _timePlaybackInterval = null;
       }
     }
+
+    const wt = game.time.worldTime;
+    const initDay = Math.floor(wt / 86400);
+    const initHour = Math.floor((wt % 86400) / 3600);
+    const initMin = Math.floor((wt % 3600) / 60);
 
     const content = `
       <style>
@@ -3100,6 +3105,10 @@ const api = {
           width:70px; text-align:center;
           background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.3);
         }
+        .rail-time-controls input[type="text"] {
+          width:60px; text-align:center;
+          background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.3);
+        }
         .rail-time-controls select {
           background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.3);
         }
@@ -3107,27 +3116,27 @@ const api = {
       </style>
       <div class="rail-time-controls">
         <div class="time-display">
-          <span class="rail-time-value">${formatWorldTime(game.time.worldTime)}</span>
+          <span class="rail-time-value">${formatWorldTime(wt)}</span>
         </div>
+        <fieldset>
+          <legend>Target</legend>
+          <div class="control-row">
+            <label>Day</label>
+            <input type="number" class="rail-target-day" value="${initDay}" min="0">
+            <label>Time</label>
+            <input type="text" class="rail-target-time" value="${String(initHour).padStart(2, "0")}:${String(initMin).padStart(2, "0")}" placeholder="HH:MM">
+          </div>
+        </fieldset>
         <fieldset>
           <legend>Step</legend>
           <div class="control-row">
-            <button type="button" class="rail-step-back" title="Step Back"><i class="fa-solid fa-backward-step"></i></button>
             <input type="number" class="rail-step-size" value="10" min="1">
             <select class="rail-step-unit">
               <option value="1">seconds</option>
               <option value="60" selected>minutes</option>
               <option value="3600">hours</option>
             </select>
-            <button type="button" class="rail-step-fwd" title="Step Forward"><i class="fa-solid fa-forward-step"></i></button>
-          </div>
-        </fieldset>
-        <fieldset>
-          <legend>Playback</legend>
-          <div class="control-row">
             <button type="button" class="rail-play-toggle" title="Play"><i class="fa-solid fa-play"></i></button>
-            <input type="number" class="rail-play-rate" value="10" min="1">
-            <label>seconds/tick</label>
           </div>
         </fieldset>
       </div>
@@ -3145,15 +3154,22 @@ const api = {
         if (!el) return;
 
         const timeValue = el.querySelector(".rail-time-value");
+        const targetDay = el.querySelector(".rail-target-day");
+        const targetTime = el.querySelector(".rail-target-time");
         const stepSize = el.querySelector(".rail-step-size");
         const stepUnit = el.querySelector(".rail-step-unit");
-        const stepBack = el.querySelector(".rail-step-back");
-        const stepFwd = el.querySelector(".rail-step-fwd");
         const playToggle = el.querySelector(".rail-play-toggle");
-        const playRate = el.querySelector(".rail-play-rate");
 
         function getStepDelta() {
           return (parseInt(stepSize.value) || 1) * parseInt(stepUnit.value);
+        }
+
+        function getTargetSeconds() {
+          const day = parseInt(targetDay.value) || 0;
+          const parts = (targetTime.value || "0:0").split(":");
+          const hour = Math.min(23, Math.max(0, parseInt(parts[0]) || 0));
+          const min = Math.min(59, Math.max(0, parseInt(parts[1]) || 0));
+          return day * 86400 + hour * 3600 + min * 60;
         }
 
         function updateDisplay() {
@@ -3163,8 +3179,8 @@ const api = {
         function updatePlayButton() {
           const icon = playToggle.querySelector("i");
           if (_timePlaybackInterval) {
-            icon.className = "fa-solid fa-pause";
-            playToggle.title = "Pause";
+            icon.className = "fa-solid fa-stop";
+            playToggle.title = "Stop";
           } else {
             icon.className = "fa-solid fa-play";
             playToggle.title = "Play";
@@ -3173,16 +3189,30 @@ const api = {
 
         const hookId = Hooks.on("updateWorldTime", updateDisplay);
 
-        stepBack.addEventListener("click", () => game.time.advance(-getStepDelta()));
-        stepFwd.addEventListener("click", () => game.time.advance(getStepDelta()));
-
         playToggle.addEventListener("click", () => {
           if (_timePlaybackInterval) {
             stopPlayback();
-          } else {
-            const rate = parseInt(playRate.value) || 10;
-            _timePlaybackInterval = setInterval(() => game.time.advance(rate), 1000);
+            updatePlayButton();
+            return;
           }
+          const target = getTargetSeconds();
+          const step = getStepDelta();
+          _timePlaybackInterval = setInterval(() => {
+            const remaining = target - game.time.worldTime;
+            if (remaining === 0) {
+              stopPlayback();
+              updatePlayButton();
+              return;
+            }
+            const direction = remaining > 0 ? 1 : -1;
+            if (Math.abs(remaining) <= step) {
+              game.time.advance(remaining);
+              stopPlayback();
+              updatePlayButton();
+            } else {
+              game.time.advance(direction * step);
+            }
+          }, 1000);
           updatePlayButton();
         });
 
