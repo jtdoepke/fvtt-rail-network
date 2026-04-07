@@ -2692,24 +2692,34 @@ const api = {
     let rows = "";
     for (const r of routes) {
       const normalized = normalizeSchedule(r);
-      const tripCount = normalized.schedule.length;
-      const schedSummary = normalized.schedule
-        .map((t) => {
-          const desc = describeCronExpression(t.cron, !!getCalendaria(), getCalendarInfo());
-          let dirLabel;
-          try {
-            const path = resolveRouteWithDrawings({ segments: t.segments }, game.time.worldTime);
-            const compass = getPathCompassLabels(path);
-            dirLabel = compass?.[t.direction ?? "outbound"];
-          } catch {
-            /* ignore */
-          }
-          if (!dirLabel) {
-            dirLabel = t.direction === "return" ? "Return" : t.direction === "roundtrip" ? "Round trip" : "Outbound";
-          }
-          return `${dirLabel} ${desc}`;
-        })
-        .join("; ");
+      let tripCount;
+      let schedSummary;
+      if (r.type === "wander") {
+        const net = r.network ?? {};
+        const destCount = Object.values(net.weights ?? {}).filter((w) => w > 0).length;
+        tripCount = "Wander";
+        schedSummary = `From ${net.startStation || "?"}, ${destCount} destination${destCount !== 1 ? "s" : ""}, ${(net.segments ?? []).length} segment${(net.segments ?? []).length !== 1 ? "s" : ""}`;
+        if (net.maxHours > 0) schedSummary += `, max ${net.maxHours}h`;
+      } else {
+        tripCount = normalized.schedule.length;
+        schedSummary = normalized.schedule
+          .map((t) => {
+            const desc = describeCronExpression(t.cron, !!getCalendaria(), getCalendarInfo());
+            let dirLabel;
+            try {
+              const path = resolveRouteWithDrawings({ segments: t.segments }, game.time.worldTime);
+              const compass = getPathCompassLabels(path);
+              dirLabel = compass?.[t.direction ?? "outbound"];
+            } catch {
+              /* ignore */
+            }
+            if (!dirLabel) {
+              dirLabel = t.direction === "return" ? "Return" : t.direction === "roundtrip" ? "Round trip" : "Outbound";
+            }
+            return `${dirLabel} ${desc}`;
+          })
+          .join("; ");
+      }
       rows += `
         <tr>
           <td>${r.name || "Unnamed Route"}</td>
