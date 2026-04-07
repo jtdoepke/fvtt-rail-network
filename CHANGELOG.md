@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Script triggers: attach JavaScript handlers to rail events at three levels — trip, route, and network. Scripts execute in order (trip → route → network) when events fire. Includes a visual editor with per-script enable/disable toggles, test buttons, and `enableScript`/`disableScript` helper functions for cross-script control. Network scripts are managed via a new scene control button; route and trip scripts are edited from sub-dialogs in the route editor. Scripts are included in config JSON export/import.
 - Hover labels on the Rail Network Status tool: train token names and station names now appear above the highlight when hovered
 
 ### Changed

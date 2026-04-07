@@ -83,8 +83,21 @@ let _statusHandler = null;
 let _statusHoverHandler = null;
 let _statusHoverHighlight = null;
 let _statusHoveredTarget = null;
+let _currentTripIndex = null;
 
 const DELAYED_STATUS_ID = "rail-network-delayed";
+
+const HOOK_PARAM_NAMES = {
+  trainDeparted: ["routeId", "departureTime", "atStation", "tokenDoc"],
+  trainArrived: ["routeId", "departureTime", "stationName", "tokenDoc"],
+  trainCompleted: ["routeId", "departureTime", "tokenDoc"],
+  trainDestroyed: ["routeId", "departureTime", "event"],
+  trainDelayed: ["routeId", "departureTime", "effectiveDelayHours", "event"],
+  trackBlocked: ["routeId", "stationName", "event"],
+  routeClosed: ["routeId", "event"],
+};
+
+const TRIP_EVENTS = ["trainDeparted", "trainArrived", "trainCompleted", "trainDestroyed", "trainDelayed"];
 
 async function setDelayedStatus(tokenDoc, active) {
   const token = canvas.tokens.get(tokenDoc.id);
@@ -149,6 +162,7 @@ function resolveRouteWithDrawings(route, worldTime) {
 
 function fireHook(hookName, ...args) {
   Hooks.callAll(`${MODULE_ID}.${hookName}`, ...args);
+  executeScriptTriggers(hookName, ...args);
 
   if (game.user.isGM) {
     // Relay serializable args to non-GM clients
@@ -168,6 +182,108 @@ function fireHookOnce(hookName, key, ...args) {
   if (_currentHookKeys) _currentHookKeys.add(fullKey);
   if (_prevHookKeys.has(fullKey)) return;
   fireHook(hookName, ...args);
+}
+
+/** Execute user-defined script triggers for a hook event (GM only). */
+function executeScriptTriggers(hookName, ...args) {
+  if (!game.user.isGM) return;
+  const paramNames = HOOK_PARAM_NAMES[hookName];
+  if (!paramNames) return;
+
+  const routeId = args[0];
+
+  // Resolve route and trip context
+  let route = null;
+  let trip = null;
+  try {
+    const routes = game.settings.get(MODULE_ID, "routes");
+    route = routes.find((r) => r.id === routeId);
+    if (route) {
+      const normalized = normalizeSchedule(route);
+      if (_currentTripIndex != null && normalized.schedule[_currentTripIndex]) {
+        trip = normalized.schedule[_currentTripIndex];
+      }
+    }
+  } catch {
+    return;
+  }
+
+  // Build enable/disable helpers bound to current context
+  const setScriptEnabled = (eventName, level, enabled) => {
+    if (!HOOK_PARAM_NAMES[eventName]) {
+      console.warn(`${MODULE_ID} | Unknown event name: ${eventName}`);
+      return;
+    }
+    if (level === "network") {
+      const scripts = game.settings.get(MODULE_ID, "networkScripts");
+      if (!scripts[eventName]) scripts[eventName] = { enabled, code: "" };
+      else scripts[eventName].enabled = enabled;
+      game.settings.set(MODULE_ID, "networkScripts", scripts);
+    } else if (level === "route") {
+      if (!route) {
+        console.warn(`${MODULE_ID} | No route context for enableScript/disableScript`);
+        return;
+      }
+      const routes = game.settings.get(MODULE_ID, "routes");
+      const stored = routes.find((r) => r.id === routeId);
+      if (!stored) return;
+      if (!stored.scripts) stored.scripts = {};
+      if (!stored.scripts[eventName]) stored.scripts[eventName] = { enabled, code: "" };
+      else stored.scripts[eventName].enabled = enabled;
+      game.settings.set(MODULE_ID, "routes", routes);
+    } else if (level === "trip") {
+      if (_currentTripIndex == null || !route) {
+        console.warn(`${MODULE_ID} | No trip context for enableScript/disableScript`);
+        return;
+      }
+      const routes = game.settings.get(MODULE_ID, "routes");
+      const stored = routes.find((r) => r.id === routeId);
+      if (!stored) return;
+      const normalized = normalizeSchedule(stored);
+      const tripObj = normalized.schedule[_currentTripIndex];
+      if (!tripObj) return;
+      if (!tripObj.scripts) tripObj.scripts = {};
+      if (!tripObj.scripts[eventName]) tripObj.scripts[eventName] = { enabled, code: "" };
+      else tripObj.scripts[eventName].enabled = enabled;
+      stored.schedule = normalized.schedule;
+      game.settings.set(MODULE_ID, "routes", routes);
+    } else {
+      console.warn(`${MODULE_ID} | Unknown script level: ${level} (use "trip", "route", or "network")`);
+    }
+  };
+  const enableScript = (eventName, level) => setScriptEnabled(eventName, level, true);
+  const disableScript = (eventName, level) => setScriptEnabled(eventName, level, false);
+
+  const run = (label, entry) => {
+    if (!entry?.code) return;
+    if (entry.enabled === false) return;
+    try {
+      const fn = new Function(...paramNames, "enableScript", "disableScript", entry.code);
+      fn(...args, enableScript, disableScript);
+    } catch (err) {
+      console.error(`${MODULE_ID} | ${label} script error:`, err);
+      ui.notifications.error(`Rail Network ${label} script error: ${err.message}`);
+    }
+  };
+
+  // Trip-level (only for per-departure hooks)
+  if (trip && TRIP_EVENTS.includes(hookName)) {
+    run(`trip ${_currentTripIndex}`, trip.scripts?.[hookName]);
+  }
+
+  // Route-level
+  if (route) {
+    const normalized = normalizeSchedule(route);
+    run(`route "${normalized.name ?? route.name}"`, normalized.scripts?.[hookName]);
+  }
+
+  // Network-level
+  try {
+    const networkScripts = game.settings.get(MODULE_ID, "networkScripts");
+    run("network", networkScripts[hookName]);
+  } catch {
+    /* settings not ready */
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +450,7 @@ async function updateAllTrains(worldTime) {
       const nameTemplate = normalized.nameTemplate ?? "[[name]] [[routeNum]]";
 
       for (const dep of allDepartures) {
+        _currentTripIndex = dep.tripIndex ?? 0;
         let legs, totalJourneySeconds;
 
         if (isWander) {
@@ -418,6 +535,7 @@ async function updateAllTrains(worldTime) {
           height: protoToken.height ?? 1,
         });
       }
+      _currentTripIndex = null;
     }
 
     // Mark desired keys
@@ -587,6 +705,13 @@ function registerSettings() {
     config: false,
     type: Array,
     default: [],
+  });
+
+  game.settings.register(MODULE_ID, "networkScripts", {
+    scope: "world",
+    config: false,
+    type: Object,
+    default: {},
   });
 }
 
@@ -1310,7 +1435,8 @@ function buildDepartureOptions(route, selectedTime) {
 function buildConfigJson(includeSegments) {
   const routes = game.settings.get(MODULE_ID, "routes");
   const events = game.settings.get(MODULE_ID, "events");
-  const data = { railNetwork: { version: 1, routes, events } };
+  const networkScripts = game.settings.get(MODULE_ID, "networkScripts");
+  const data = { railNetwork: { version: 1, routes, events, networkScripts } };
   if (includeSegments) {
     data.railNetwork.scenes = {};
     for (const scene of game.scenes) {
@@ -1342,7 +1468,7 @@ async function applyConfig(data) {
   if (!data?.railNetwork?.version) throw new Error("Invalid format: missing railNetwork.version");
   if (data.railNetwork.version !== 1) throw new Error(`Unsupported config version: ${data.railNetwork.version}`);
 
-  const { routes = [], events = [], scenes } = data.railNetwork;
+  const { routes = [], events = [], networkScripts, scenes } = data.railNetwork;
   if (!Array.isArray(routes)) throw new Error("routes must be an array");
   if (!Array.isArray(events)) throw new Error("events must be an array");
 
@@ -1356,6 +1482,9 @@ async function applyConfig(data) {
 
   await game.settings.set(MODULE_ID, "routes", routes);
   await game.settings.set(MODULE_ID, "events", events);
+  if (networkScripts && typeof networkScripts === "object") {
+    await game.settings.set(MODULE_ID, "networkScripts", networkScripts);
+  }
 
   // Import scene segments if present
   if (scenes && typeof scenes === "object") {
@@ -2259,6 +2388,10 @@ const api = {
             <button type="button" class="add-trip-seg" data-trip="${tripIdx}" style="font-size:0.85em;margin-left:4px;">+ Segment</button>
           </div>
           <div class="trip-desc" style="font-size:0.85em;opacity:0.7;font-style:italic;">→ ${desc}</div>
+          <div style="margin-top:4px;">
+            <button type="button" class="edit-trip-scripts" data-trip="${tripIdx}" style="font-size:0.85em;">Edit Trip Scripts</button>
+            <span class="trip-scripts-count" data-trip="${tripIdx}" style="opacity:0.7;font-size:0.85em;margin-left:6px;">(${Object.values(trip.scripts ?? {}).filter((s) => s?.code).length} defined)</span>
+          </div>
         </div>`;
     }
 
@@ -2400,6 +2533,11 @@ const api = {
           <p class="hint" style="font-size:0.85em;opacity:0.7;margin:2px 0 0;">
             Variables: <code>[[name]]</code> (route name), <code>[[actor]]</code> (actor name), <code>[[routeNum]]</code> (route number)
           </p>
+        </div>
+
+        <div class="form-group">
+          <button type="button" class="edit-route-scripts" style="width:auto;">Edit Route Scripts</button>
+          <span class="route-scripts-count" style="opacity:0.7;font-size:0.85em;margin-left:6px;">(${Object.values(existing?.scripts ?? {}).filter((s) => s?.code).length} defined)</span>
         </div>
 
         <div class="network-section" style="${isWander ? "" : "display:none;"}">
@@ -2751,18 +2889,75 @@ const api = {
             e.target.closest(".trip-block").remove();
           }
         });
+
+        // Script editing state — held in memory until route is saved
+        const allEvents = Object.keys(HOOK_PARAM_NAMES);
+        let routeScripts = { ...(existing?.scripts ?? {}) };
+        const tripScriptsMap = new Map(); // tripIdx → scripts object
+        for (let t = 0; t < trips.length; t++) {
+          tripScriptsMap.set(t, { ...(trips[t]?.scripts ?? {}) });
+        }
+
+        const countDefined = (scripts) => Object.values(scripts ?? {}).filter((s) => s?.code).length;
+
+        // Edit route scripts button
+        form.querySelector(".edit-route-scripts")?.addEventListener("click", async (e) => {
+          e.preventDefault();
+          const result = await api.openScriptsDialog(
+            `Route Scripts — ${existing?.name || "New Route"}`,
+            routeScripts,
+            allEvents,
+          );
+          if (result) {
+            routeScripts = result;
+            form._railRouteScripts = routeScripts;
+            const countEl = form.querySelector(".route-scripts-count");
+            if (countEl) countEl.textContent = `(${countDefined(routeScripts)} defined)`;
+          }
+        });
+
+        // Edit trip scripts buttons (use event delegation)
+        form.addEventListener("click", async (e) => {
+          if (!e.target.classList.contains("edit-trip-scripts")) return;
+          e.preventDefault();
+          const tripIdx = Number(e.target.dataset.trip);
+          if (!tripScriptsMap.has(tripIdx)) tripScriptsMap.set(tripIdx, {});
+          const result = await api.openScriptsDialog(
+            `Trip ${tripIdx + 1} Scripts — ${existing?.name || "New Route"}`,
+            tripScriptsMap.get(tripIdx),
+            TRIP_EVENTS,
+          );
+          if (result) {
+            tripScriptsMap.set(tripIdx, result);
+            form._railTripScriptsMap = tripScriptsMap;
+            const countEl = form.querySelector(`.trip-scripts-count[data-trip="${tripIdx}"]`);
+            if (countEl) countEl.textContent = `(${countDefined(result)} defined)`;
+          }
+        });
+
+        // Expose scripts state for the save callback (stored on form element)
+        form._railRouteScripts = routeScripts;
+        form._railTripScriptsMap = tripScriptsMap;
       },
       buttons: [
         {
           action: "save",
           label: "Save",
-          callback: (event, button) => new foundry.applications.ux.FormDataExtended(button.form).object,
+          callback: (event, button) => {
+            const formData = new foundry.applications.ux.FormDataExtended(button.form).object;
+            formData._railRouteScripts = button.form._railRouteScripts;
+            formData._railTripScriptsMap = button.form._railTripScriptsMap;
+            return formData;
+          },
         },
         { action: "cancel", label: "Cancel" },
       ],
     });
 
     if (result === "cancel" || !result) return;
+
+    const routeScriptsResult = result._railRouteScripts ?? {};
+    const tripScriptsMapResult = result._railTripScriptsMap ?? new Map();
 
     // Reconstruct route from flat form data
     const schedule = [];
@@ -2798,11 +2993,18 @@ const api = {
         segments.push({ segmentId: segId });
       }
 
+      const tripScripts = tripScriptsMapResult.get?.(t) ?? {};
+      const cleanedTripScripts = {};
+      for (const [evt, entry] of Object.entries(tripScripts)) {
+        if (entry?.code) cleanedTripScripts[evt] = entry;
+      }
+
       schedule.push({
         cron,
         routeNumbers: routeNum != null && routeNum !== "" ? [routeNum] : [],
         direction,
         segments,
+        ...(Object.keys(cleanedTripScripts).length > 0 && { scripts: cleanedTripScripts }),
       });
     }
 
@@ -2832,6 +3034,12 @@ const api = {
       };
     }
 
+    // Clean route-level scripts (remove entries with no code)
+    const cleanedRouteScripts = {};
+    for (const [evt, entry] of Object.entries(routeScriptsResult)) {
+      if (entry?.code) cleanedRouteScripts[evt] = entry;
+    }
+
     const route = {
       id: result.id || foundry.utils.randomID(),
       name: result.name,
@@ -2841,6 +3049,7 @@ const api = {
       schedule,
       ...(routeType && { type: routeType }),
       ...(network && { network }),
+      ...(Object.keys(cleanedRouteScripts).length > 0 && { scripts: cleanedRouteScripts }),
     };
     if (!route.actorId) {
       ui.notifications.warn("No actor selected — this route will not produce tokens.");
@@ -3070,6 +3279,11 @@ const api = {
         command: `game.modules.get("${MODULE_ID}").api.hardRefresh()`,
         img: "fa-solid fa-train",
       },
+      {
+        name: "Rail: Network Scripts",
+        command: `game.modules.get("${MODULE_ID}").api.networkScriptsDialog()`,
+        img: "fa-solid fa-code",
+      },
     ];
     for (const m of macros) {
       await Macro.create({ name: m.name, type: "script", command: m.command, img: "icons/svg/lightning.svg" });
@@ -3233,6 +3447,136 @@ const api = {
         },
       ],
     });
+  },
+
+  /**
+   * Open a scripts editor dialog. Returns the scripts object on Save, or null on Cancel.
+   * @param {string} title - Dialog title
+   * @param {Object} scripts - Current scripts object (eventName → {enabled, code})
+   * @param {string[]} eventList - Which events to show editors for
+   * @returns {Promise<Object|null>}
+   */
+  async openScriptsDialog(title, scripts, eventList) {
+    const safeScripts = scripts ?? {};
+
+    let sections = "";
+    for (const evt of eventList) {
+      const params = HOOK_PARAM_NAMES[evt];
+      const entry = safeScripts[evt] ?? {};
+      const checked = entry.enabled !== false ? " checked" : "";
+      sections += `
+        <div style="margin-bottom:12px;border:1px solid var(--color-border-light);border-radius:4px;padding:8px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+            <label style="display:flex;align-items:center;gap:4px;font-weight:bold;">
+              <input type="checkbox" name="enabled_${evt}" ${checked}>
+              ${evt}
+            </label>
+            <button type="button" class="script-test" data-event="${evt}" style="font-size:0.85em;margin-left:auto;">Test</button>
+          </div>
+          <p style="font-size:0.8em;opacity:0.7;margin:0 0 4px;">
+            Parameters: <code>${params.join(", ")}</code>,
+            <code>enableScript(event, level)</code>,
+            <code>disableScript(event, level)</code>
+          </p>
+          <textarea name="code_${evt}"
+            style="font-family:monospace;font-size:11px;white-space:pre;tab-size:2;resize:vertical;min-height:80px;width:100%;box-sizing:border-box;"
+          ></textarea>
+        </div>`;
+    }
+
+    const content = `<form>${sections}</form>`;
+
+    const result = await foundry.applications.api.DialogV2.wait({
+      id: "rail-network-edit-scripts",
+      window: { title },
+      content,
+      position: { width: 620, height: 500 },
+      render: (_event, dialog) => {
+        const form = dialog.element.querySelector("form");
+        if (!form) return;
+
+        // Set textarea values programmatically to avoid HTML escaping issues
+        for (const evt of eventList) {
+          const ta = form.querySelector(`textarea[name="code_${evt}"]`);
+          if (ta) ta.value = safeScripts[evt]?.code ?? "";
+        }
+
+        // Wire up test buttons
+        for (const btn of form.querySelectorAll(".script-test")) {
+          btn.addEventListener("click", () => {
+            const evt = btn.dataset.event;
+            const ta = form.querySelector(`textarea[name="code_${evt}"]`);
+            const code = ta?.value ?? "";
+            if (!code.trim()) {
+              ui.notifications.warn("No script to test.");
+              return;
+            }
+            const params = HOOK_PARAM_NAMES[evt];
+            const testArgs = params.map((p) => {
+              if (p === "routeId") return "test-route";
+              if (p === "departureTime") return 0;
+              if (p === "stationName" || p === "atStation") return "Test Station";
+              if (p === "effectiveDelayHours") return 1;
+              if (p === "tokenDoc" || p === "event") return null;
+              return null;
+            });
+            const noop = () => {};
+            try {
+              const fn = new Function(...params, "enableScript", "disableScript", code);
+              fn(...testArgs, noop, noop);
+              ui.notifications.info(`Script test for "${evt}" completed successfully.`);
+            } catch (err) {
+              ui.notifications.error(`Script test for "${evt}" failed: ${err.message}`);
+            }
+          });
+        }
+
+        // Enable scroll
+        const scrollEl = dialog.element.querySelector(".window-content");
+        if (scrollEl) scrollEl.style.overflowY = "auto";
+      },
+      buttons: [
+        {
+          action: "save",
+          label: "Save",
+          callback: (_event, button) => {
+            const form = button.form;
+            const result = {};
+            for (const evt of eventList) {
+              const code = form.querySelector(`textarea[name="code_${evt}"]`)?.value ?? "";
+              const enabled = form.querySelector(`input[name="enabled_${evt}"]`)?.checked !== false;
+              if (code.trim()) {
+                result[evt] = { enabled, code };
+              }
+            }
+            return result;
+          },
+        },
+        { action: "cancel", label: "Cancel" },
+      ],
+    });
+
+    if (result === "cancel" || result == null) return null;
+    return result;
+  },
+
+  /** Open the network-level scripts editor dialog. */
+  async networkScriptsDialog() {
+    const networkScripts = game.settings.get(MODULE_ID, "networkScripts");
+    const allEvents = Object.keys(HOOK_PARAM_NAMES);
+    const result = await api.openScriptsDialog("Rail Network — Network Scripts", networkScripts, allEvents);
+    if (result) {
+      await game.settings.set(MODULE_ID, "networkScripts", result);
+      ui.notifications.info("Network scripts saved.");
+    }
+  },
+
+  getNetworkScripts() {
+    return game.settings.get(MODULE_ID, "networkScripts");
+  },
+
+  async setNetworkScripts(scripts) {
+    await game.settings.set(MODULE_ID, "networkScripts", scripts);
   },
 };
 
@@ -3593,6 +3937,14 @@ Hooks.on("getSceneControlButtons", (controls) => {
         onClick: () => api.timeControlDialog(),
         button: true,
         visible: !game.modules.get("calendaria")?.active,
+      },
+      "network-scripts": {
+        name: "network-scripts",
+        order: 9,
+        title: "Network Scripts",
+        icon: "fa-solid fa-code",
+        onClick: () => api.networkScriptsDialog(),
+        button: true,
       },
     },
   };

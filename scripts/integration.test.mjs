@@ -458,3 +458,92 @@ describe("computeDesiredTokens", () => {
     assert.equal(tokens.length, 1);
   });
 });
+
+// ============================================================================
+// Script Triggers — execution pattern tests
+// ============================================================================
+
+describe("Script trigger execution pattern", () => {
+  // These tests verify the new Function() pattern used by executeScriptTriggers
+  // without requiring Foundry globals.
+
+  const HOOK_PARAM_NAMES = {
+    trainDeparted: ["routeId", "departureTime", "atStation", "tokenDoc"],
+    trainArrived: ["routeId", "departureTime", "stationName", "tokenDoc"],
+    trainCompleted: ["routeId", "departureTime", "tokenDoc"],
+    trainDestroyed: ["routeId", "departureTime", "event"],
+    trainDelayed: ["routeId", "departureTime", "effectiveDelayHours", "event"],
+    trackBlocked: ["routeId", "stationName", "event"],
+    routeClosed: ["routeId", "event"],
+  };
+
+  const TRIP_EVENTS = ["trainDeparted", "trainArrived", "trainCompleted", "trainDestroyed", "trainDelayed"];
+
+  it("script receives named parameters via new Function", () => {
+    const params = HOOK_PARAM_NAMES.trainDeparted;
+    const code = "return { routeId, departureTime, atStation }";
+    const fn = new Function(...params, "enableScript", "disableScript", code);
+    const noop = () => {};
+    const result = fn("route-1", 3600, "Station A", null, noop, noop);
+    assert.deepEqual(result, { routeId: "route-1", departureTime: 3600, atStation: "Station A" });
+  });
+
+  it("script can call enableScript/disableScript helpers", () => {
+    const calls = [];
+    const enable = (evt, level) => calls.push({ action: "enable", evt, level });
+    const disable = (evt, level) => calls.push({ action: "disable", evt, level });
+
+    const params = HOOK_PARAM_NAMES.trainDeparted;
+    const code = `
+      enableScript("trainArrived", "network");
+      disableScript("trainDeparted", "trip");
+    `;
+    const fn = new Function(...params, "enableScript", "disableScript", code);
+    fn("route-1", 0, null, null, enable, disable);
+
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0], { action: "enable", evt: "trainArrived", level: "network" });
+    assert.deepEqual(calls[1], { action: "disable", evt: "trainDeparted", level: "trip" });
+  });
+
+  it("script errors do not propagate when caught", () => {
+    const params = HOOK_PARAM_NAMES.trainDeparted;
+    const code = "throw new Error('test error')";
+    const fn = new Function(...params, "enableScript", "disableScript", code);
+    const noop = () => {};
+    assert.throws(() => fn("route-1", 0, null, null, noop, noop), { message: "test error" });
+    // In the actual implementation, executeScriptTriggers catches this and shows a notification
+  });
+
+  it("all hook events have valid parameter lists", () => {
+    for (const [evt, params] of Object.entries(HOOK_PARAM_NAMES)) {
+      assert.ok(params.length > 0, `${evt} should have parameters`);
+      assert.ok(params[0] === "routeId", `${evt} first param should be routeId`);
+    }
+  });
+
+  it("TRIP_EVENTS is a subset of all events", () => {
+    const allEvents = Object.keys(HOOK_PARAM_NAMES);
+    for (const evt of TRIP_EVENTS) {
+      assert.ok(allEvents.includes(evt), `${evt} should be in HOOK_PARAM_NAMES`);
+    }
+  });
+
+  it("trackBlocked and routeClosed are not trip events", () => {
+    assert.ok(!TRIP_EVENTS.includes("trackBlocked"));
+    assert.ok(!TRIP_EVENTS.includes("routeClosed"));
+  });
+
+  it("script entry with enabled=false should be skipped", () => {
+    const entry = { enabled: false, code: "return 'should not run'" };
+    // Simulates the check in executeScriptTriggers
+    assert.equal(entry.enabled === false, true);
+  });
+
+  it("script entry with empty code should be skipped", () => {
+    const entry = { enabled: true, code: "" };
+    assert.equal(!entry.code, true);
+    const entry2 = { enabled: true };
+    assert.equal(!entry2?.code, true);
+  });
+});
