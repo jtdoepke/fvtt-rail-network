@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Time Controls button in the Rail Network control group (step forward/back with adjustable increments, play/pause at configurable rate). Hidden when Calendaria is installed.
+
 ### Changed
 
 - Wandering route PRNG seed now includes the trip index, so multiple trips at the same departure time produce different random walks

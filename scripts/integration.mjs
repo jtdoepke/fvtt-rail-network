@@ -45,6 +45,9 @@ const _wanderWalkCache = new Map();
 /** @type {Map<string, {x: number, y: number}>} tokenId → intended position */
 const _intendedPositions = new Map();
 
+/** Interval ID for time playback (play-forward mode). */
+let _timePlaybackInterval = null;
+
 /**
  * Compute pixelsPerHour for a route if it uses actor-speed mode.
  * Returns null when the route uses manual hoursFromPrev or when
@@ -3059,6 +3062,134 @@ const api = {
     }
     ui.notifications.info("Rail Network macros installed.");
   },
+
+  /** Open a dialog with time step and playback controls. */
+  async timeControlDialog() {
+    function stopPlayback() {
+      if (_timePlaybackInterval) {
+        clearInterval(_timePlaybackInterval);
+        _timePlaybackInterval = null;
+      }
+    }
+
+    const content = `
+      <style>
+        .rail-time-controls { display:flex; flex-direction:column; gap:8px; }
+        .rail-time-controls .time-display {
+          text-align:center; font-size:1.1em; padding:4px;
+          background:rgba(0,0,0,0.2); border-radius:4px;
+        }
+        .rail-time-controls .control-row {
+          display:flex; align-items:center; gap:6px;
+        }
+        .rail-time-controls input[type="number"] {
+          width:70px; text-align:center;
+          background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.3);
+        }
+        .rail-time-controls select {
+          background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.3);
+        }
+        .rail-time-controls button { flex:0 0 auto; }
+      </style>
+      <div class="rail-time-controls">
+        <div class="time-display">
+          <span class="rail-time-value">${formatWorldTime(game.time.worldTime)}</span>
+        </div>
+        <fieldset>
+          <legend>Step</legend>
+          <div class="control-row">
+            <button type="button" class="rail-step-back" title="Step Back"><i class="fa-solid fa-backward-step"></i></button>
+            <input type="number" class="rail-step-size" value="10" min="1">
+            <select class="rail-step-unit">
+              <option value="1">seconds</option>
+              <option value="60" selected>minutes</option>
+              <option value="3600">hours</option>
+            </select>
+            <button type="button" class="rail-step-fwd" title="Step Forward"><i class="fa-solid fa-forward-step"></i></button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Playback</legend>
+          <div class="control-row">
+            <button type="button" class="rail-play-toggle" title="Play"><i class="fa-solid fa-play"></i></button>
+            <input type="number" class="rail-play-rate" value="10" min="1">
+            <label>seconds/tick</label>
+          </div>
+        </fieldset>
+      </div>
+    `;
+
+    stopPlayback();
+
+    await foundry.applications.api.DialogV2.wait({
+      id: "rail-network-time-controls",
+      window: { title: "Rail Network — Time Controls" },
+      content,
+      position: { width: 340 },
+      render: (_event, dialog) => {
+        const el = dialog.element;
+        if (!el) return;
+
+        const timeValue = el.querySelector(".rail-time-value");
+        const stepSize = el.querySelector(".rail-step-size");
+        const stepUnit = el.querySelector(".rail-step-unit");
+        const stepBack = el.querySelector(".rail-step-back");
+        const stepFwd = el.querySelector(".rail-step-fwd");
+        const playToggle = el.querySelector(".rail-play-toggle");
+        const playRate = el.querySelector(".rail-play-rate");
+
+        function getStepDelta() {
+          return (parseInt(stepSize.value) || 1) * parseInt(stepUnit.value);
+        }
+
+        function updateDisplay() {
+          timeValue.textContent = formatWorldTime(game.time.worldTime);
+        }
+
+        function updatePlayButton() {
+          const icon = playToggle.querySelector("i");
+          if (_timePlaybackInterval) {
+            icon.className = "fa-solid fa-pause";
+            playToggle.title = "Pause";
+          } else {
+            icon.className = "fa-solid fa-play";
+            playToggle.title = "Play";
+          }
+        }
+
+        const hookId = Hooks.on("updateWorldTime", updateDisplay);
+
+        stepBack.addEventListener("click", () => game.time.advance(-getStepDelta()));
+        stepFwd.addEventListener("click", () => game.time.advance(getStepDelta()));
+
+        playToggle.addEventListener("click", () => {
+          if (_timePlaybackInterval) {
+            stopPlayback();
+          } else {
+            const rate = parseInt(playRate.value) || 10;
+            _timePlaybackInterval = setInterval(() => game.time.advance(rate), 1000);
+          }
+          updatePlayButton();
+        });
+
+        // Clean up when dialog closes.
+        const observer = new MutationObserver(() => {
+          if (!el.isConnected) {
+            observer.disconnect();
+            Hooks.off("updateWorldTime", hookId);
+            stopPlayback();
+          }
+        });
+        observer.observe(el.parentElement ?? document.body, { childList: true });
+      },
+      buttons: [
+        {
+          action: "close",
+          label: "Close",
+        },
+      ],
+    });
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -3091,6 +3222,10 @@ Hooks.on("updateWorldTime", (worldTime, _dt, _options, _userId) => {
 Hooks.on("canvasReady", () => {
   invalidateCache();
   _intendedPositions.clear();
+  if (_timePlaybackInterval) {
+    clearInterval(_timePlaybackInterval);
+    _timePlaybackInterval = null;
+  }
   updateAllTrains(game.time.worldTime);
 
   // Tag Segment tool: click a drawing on canvas to open the Tag Segment dialog.
@@ -3382,6 +3517,15 @@ Hooks.on("getSceneControlButtons", (controls) => {
         icon: "fa-solid fa-file-code",
         onClick: () => api.configDialog(),
         button: true,
+      },
+      "time-controls": {
+        name: "time-controls",
+        order: 8,
+        title: "Time Controls",
+        icon: "fa-solid fa-clock",
+        onClick: () => api.timeControlDialog(),
+        button: true,
+        visible: !game.modules.get("calendaria")?.active,
       },
     },
   };
