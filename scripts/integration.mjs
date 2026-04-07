@@ -1154,6 +1154,90 @@ function buildDepartureOptions(route, selectedTime) {
 }
 
 // ---------------------------------------------------------------------------
+// Configuration export / import helpers
+// ---------------------------------------------------------------------------
+
+function buildConfigJson(includeSegments) {
+  const routes = game.settings.get(MODULE_ID, "routes");
+  const events = game.settings.get(MODULE_ID, "events");
+  const data = { railNetwork: { version: 1, routes, events } };
+  if (includeSegments) {
+    data.railNetwork.scenes = {};
+    for (const scene of game.scenes) {
+      const tagged = scene.drawings.filter((d) => d.flags?.[MODULE_ID]?.segmentId);
+      if (!tagged.length) continue;
+      data.railNetwork.scenes[scene.name] = {
+        segments: tagged.map((d) => ({
+          segmentId: d.flags[MODULE_ID].segmentId,
+          stations: d.flags[MODULE_ID].stations ?? [],
+          drawing: {
+            shape: { points: Array.from(d.shape.points) },
+            x: d.x,
+            y: d.y,
+            strokeColor: d.strokeColor,
+            strokeWidth: d.strokeWidth,
+            fillType: d.fillType,
+            fillColor: d.fillColor,
+            fillAlpha: d.fillAlpha,
+            bezierFactor: d.bezierFactor,
+          },
+        })),
+      };
+    }
+  }
+  return JSON.stringify(data, null, 2);
+}
+
+async function applyConfig(data) {
+  if (!data?.railNetwork?.version) throw new Error("Invalid format: missing railNetwork.version");
+  if (data.railNetwork.version !== 1) throw new Error(`Unsupported config version: ${data.railNetwork.version}`);
+
+  const { routes = [], events = [], scenes } = data.railNetwork;
+  if (!Array.isArray(routes)) throw new Error("routes must be an array");
+  if (!Array.isArray(events)) throw new Error("events must be an array");
+
+  // Warn about missing actor references
+  for (const route of routes) {
+    if (route.actorId && !game.actors.get(route.actorId)) {
+      ui.notifications.warn(`Route "${route.name}": actor not found, clearing actorId.`);
+      route.actorId = null;
+    }
+  }
+
+  await game.settings.set(MODULE_ID, "routes", routes);
+  await game.settings.set(MODULE_ID, "events", events);
+
+  // Import scene segments if present
+  if (scenes && typeof scenes === "object") {
+    for (const [sceneName, sceneData] of Object.entries(scenes)) {
+      const targetScene = game.scenes.find((s) => s.name === sceneName);
+      if (!targetScene) {
+        ui.notifications.warn(`Scene "${sceneName}" not found, skipping segments.`);
+        continue;
+      }
+      const existingSegIds = new Set(
+        targetScene.drawings.filter((d) => d.flags?.[MODULE_ID]?.segmentId).map((d) => d.flags[MODULE_ID].segmentId),
+      );
+      const toCreate = [];
+      for (const seg of sceneData.segments ?? []) {
+        if (existingSegIds.has(seg.segmentId)) continue;
+        toCreate.push({
+          ...seg.drawing,
+          shape: { type: "p", ...seg.drawing.shape },
+          flags: { [MODULE_ID]: { segmentId: seg.segmentId, stations: seg.stations } },
+        });
+      }
+      if (toCreate.length) {
+        await targetScene.createEmbeddedDocuments("Drawing", toCreate);
+      }
+    }
+  }
+
+  invalidateCache();
+  updateAllTrains(game.time.worldTime);
+}
+
+// ---------------------------------------------------------------------------
 // GM API — exposed at game.modules.get("rail-network").api
 // ---------------------------------------------------------------------------
 
@@ -2692,6 +2776,59 @@ const api = {
     }
   },
 
+  /** Open a dialog showing the current configuration as editable JSON. */
+  async configDialog() {
+    const content = `
+      <div style="display:flex;flex-direction:column;height:100%;">
+        <label style="margin-bottom:6px;">
+          <input type="checkbox" name="includeSegments" checked />
+          Include scene segment geometry
+        </label>
+        <textarea name="json" style="flex:1;font-family:monospace;font-size:12px;white-space:pre;tab-size:2;resize:none;"
+        ></textarea>
+      </div>`;
+    const result = await foundry.applications.api.DialogV2.wait({
+      id: "rail-network-config-json",
+      window: { title: "Rail Network — Configuration JSON" },
+      content,
+      position: { width: 700, height: 600 },
+      render: (_event, dialog) => {
+        const ta = dialog.element.querySelector("textarea[name=json]");
+        const cb = dialog.element.querySelector("input[name=includeSegments]");
+        ta.value = buildConfigJson(cb.checked);
+        cb.addEventListener("change", () => {
+          ta.value = buildConfigJson(cb.checked);
+        });
+      },
+      buttons: [
+        {
+          action: "save",
+          label: "Save",
+          callback: (_event, button) => {
+            return button.form.elements.json.value;
+          },
+        },
+        { action: "close", label: "Cancel" },
+      ],
+    });
+
+    if (result && result !== "close") {
+      let parsed;
+      try {
+        parsed = JSON.parse(result);
+      } catch (err) {
+        ui.notifications.error(`Invalid JSON: ${err.message}`);
+        return;
+      }
+      try {
+        await applyConfig(parsed);
+        ui.notifications.info("Rail Network configuration saved.");
+      } catch (err) {
+        ui.notifications.error(`Import failed: ${err.message}`);
+      }
+    }
+  },
+
   /** Create hotbar macros in the Macro Directory. */
   async installMacros() {
     const macros = [
@@ -3045,6 +3182,14 @@ Hooks.on("getSceneControlButtons", (controls) => {
         title: "Refresh Trains",
         icon: "fa-solid fa-train",
         onClick: () => api.refresh(),
+        button: true,
+      },
+      "config-json": {
+        name: "config-json",
+        order: 7,
+        title: "Configuration JSON",
+        icon: "fa-solid fa-file-code",
+        onClick: () => api.configDialog(),
         button: true,
       },
     },

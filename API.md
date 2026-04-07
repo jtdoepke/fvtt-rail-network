@@ -241,6 +241,14 @@ Open the event create/edit dialog. Pass an event ID to edit an existing event.
 
 Alias for `eventListDialog()`.
 
+#### `configDialog()`
+
+Open a dialog showing the current configuration (routes, events, and optionally scene segment geometry) as editable JSON. Paste modified or new JSON and click Save to apply.
+
+```js
+await api.configDialog();
+```
+
 #### `installMacros()`
 
 Create hotbar macros in the Macro Directory for common operations.
