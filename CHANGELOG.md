@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Manage Routes dialog now shows a meaningful summary for wandering routes (start station, destination count, segment count) instead of "0" trips and "—"
+
 ### Fixed
 
 - Improved table row contrast across all dialogs (Tag Segment, Station Weights, Route List, Event List, Train Info, Station Info) so input fields are visually distinct from row backgrounds
