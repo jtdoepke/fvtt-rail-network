@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Improved table row contrast across all dialogs (Tag Segment, Station Weights, Route List, Event List, Train Info, Station Info) so input fields are visually distinct from row backgrounds
+
 ## [0.0.15] - 2026-04-06
 
 ### Added
