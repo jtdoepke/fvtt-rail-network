@@ -335,7 +335,7 @@ async function updateAllTrains(worldTime) {
 
         if (isWander) {
           // Wandering route: compute walk per departure (unique seed)
-          const wanderKey = `${normalized.id}::${dep.departureTime}`;
+          const wanderKey = `${normalized.id}::${dep.departureTime}::${dep.tripIndex ?? 0}`;
           let walkResult = _wanderWalkCache.get(wanderKey);
           if (!walkResult) {
             walkResult = computeWanderingWalk(
@@ -344,6 +344,7 @@ async function updateAllTrains(worldTime) {
               normalized.id,
               singleSegResolver,
               getPixelsPerHour(normalized),
+              dep.tripIndex ?? 0,
             );
             _wanderWalkCache.set(wanderKey, walkResult);
           }
@@ -450,6 +451,7 @@ async function updateAllTrains(worldTime) {
                 routeId: desired.routeId,
                 departureTime: desired.departureTime,
                 routeNum: desired.routeNum,
+                tripIndex: desired.tripIndex ?? 0,
               },
             },
           });
@@ -720,7 +722,7 @@ function findTrainLegInfo(legs, adjustedElapsed) {
 async function showTrainInfoDialog(token) {
   const flags = token.document.flags?.[MODULE_ID];
   if (!flags) return;
-  const { routeId, departureTime, routeNum } = flags;
+  const { routeId, departureTime, routeNum, tripIndex } = flags;
   const worldTime = game.time.worldTime;
   const routes = game.settings.get(MODULE_ID, "routes");
   const allEvents = game.settings.get(MODULE_ID, "events");
@@ -753,6 +755,7 @@ async function showTrainInfoDialog(token) {
       normalized.id,
       singleSegResolver,
       getPixelsPerHour(normalized),
+      tripIndex ?? 0,
     );
     if (!walkResult || walkResult.legs.length === 0) return;
     legs = walkResult.legs;
@@ -949,6 +952,7 @@ async function showStationInfoDialog(stationInfo) {
             normalized.id,
             wanderSegResolver,
             getPixelsPerHour(normalized),
+            dep.tripIndex ?? 0,
           );
           if (!walkResult || walkResult.legs.length === 0) continue;
 

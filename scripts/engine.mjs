@@ -589,6 +589,7 @@ export function findAllActiveDepartures(worldTime, schedulePatterns, maxJourneyS
           departureTime,
           elapsed,
           routeNum,
+          tripIndex: pi,
           direction: pattern.direction ?? "outbound",
           segments: pattern.segments,
         });
@@ -789,6 +790,7 @@ export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
         normalized.id,
         wanderResolver,
         pixelsPerHour ?? null,
+        dep.tripIndex ?? 0,
       );
       if (!walkResult || walkResult.legs.length === 0) continue;
       legs = walkResult.legs;
@@ -812,6 +814,7 @@ export function computeDesiredTokens(route, worldTime, allEvents, opts = {}) {
     results.push({
       routeId: normalized.id,
       departureTime: dep.departureTime,
+      tripIndex: dep.tripIndex ?? 0,
       routeNum,
       x: pos.x,
       y: pos.y,
@@ -1222,17 +1225,20 @@ export function mulberry32(seed) {
 }
 
 /**
- * Derive a deterministic integer seed from departure time and route ID.
+ * Derive a deterministic integer seed from departure time, route ID, and optional trip index.
  *
  * @param {number} departureTime - Seconds since epoch
  * @param {string} routeId - Route identifier
+ * @param {number} [tripIndex=0] - Trip index within the route schedule
  * @returns {number}
  */
-export function hashSeed(departureTime, routeId) {
+export function hashSeed(departureTime, routeId, tripIndex = 0) {
   let hash = departureTime;
   for (let i = 0; i < routeId.length; i++) {
     hash = ((hash << 5) - hash + routeId.charCodeAt(i)) | 0;
   }
+  // Mix in trip index so different trips at the same departure time get different walks
+  hash = ((hash << 5) - hash + tripIndex) | 0;
   return hash;
 }
 
@@ -1575,9 +1581,16 @@ export function buildPathFromEdges(edges, segmentPaths) {
  * @param {number|null} [pixelsPerHour=null] - Actor-speed mode
  * @returns {{ legs: Array, totalJourneySeconds: number }}
  */
-export function computeWanderingWalk(network, departureTime, routeId, pathResolver, pixelsPerHour = null) {
+export function computeWanderingWalk(
+  network,
+  departureTime,
+  routeId,
+  pathResolver,
+  pixelsPerHour = null,
+  tripIndex = 0,
+) {
   const graph = buildNetworkGraph(network.segments, pathResolver);
-  const rng = mulberry32(hashSeed(departureTime, routeId));
+  const rng = mulberry32(hashSeed(departureTime, routeId, tripIndex));
 
   // Pre-compute reachable stations from startStation via BFS
   const reachable = new Set();

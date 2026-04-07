@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Wandering route PRNG seed now includes the trip index, so multiple trips at the same departure time produce different random walks
+
 ### Fixed
 
 - Adding new trips to a wandering route no longer shows the Direction and Segments fields
