@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Hover labels on the Rail Network Status tool: train token names and station names now appear above the highlight when hovered
+
 ## [0.0.17] - 2026-04-06
 
 ### Added

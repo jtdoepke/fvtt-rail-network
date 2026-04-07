@@ -3355,6 +3355,17 @@ Hooks.on("canvasReady", () => {
   canvas.stage.on("pointerdown", _statusHandler);
 
   // Status hover handler — highlight train tokens and stations
+  const _hoverLabelStyle = new PIXI.TextStyle({
+    fontFamily: "Signika, sans-serif",
+    fontSize: 14,
+    fill: 0xffcc00,
+    stroke: 0x000000,
+    strokeThickness: 3,
+    dropShadow: true,
+    dropShadowDistance: 0,
+    dropShadowBlur: 4,
+  });
+
   if (_statusHoverHandler) canvas.stage.off("pointermove", _statusHoverHandler);
   _statusHoverHandler = (event) => {
     if (!isStatusActive()) {
@@ -3370,6 +3381,7 @@ Hooks.on("canvasReady", () => {
       clearStatusHighlight();
       _statusHoveredTarget = { type: "train", ref: token };
       const b = token.bounds;
+      const c = new PIXI.Container();
       const g = new PIXI.Graphics();
       for (const { width, alpha } of [
         { width: 12, alpha: 0.1 },
@@ -3381,8 +3393,13 @@ Hooks.on("canvasReady", () => {
       }
       g.lineStyle(3, 0xffcc00, 0.9);
       g.drawRect(b.x, b.y, b.width, b.height);
-      canvas.controls.addChild(g);
-      _statusHoverHighlight = g;
+      c.addChild(g);
+      const label = new PIXI.Text(token.document.name, _hoverLabelStyle);
+      label.anchor.set(0.5, 1);
+      label.position.set(b.x + b.width / 2, b.y - 4);
+      c.addChild(label);
+      canvas.controls.addChild(c);
+      _statusHoverHighlight = c;
       return;
     }
 
@@ -3398,6 +3415,7 @@ Hooks.on("canvasReady", () => {
         return;
       clearStatusHighlight();
       _statusHoveredTarget = { type: "station", ref: station };
+      const c = new PIXI.Container();
       const g = new PIXI.Graphics();
       g.beginFill(0xffcc00, 0.1);
       g.drawCircle(station.x, station.y, 20);
@@ -3408,8 +3426,13 @@ Hooks.on("canvasReady", () => {
       g.beginFill(0xffcc00, 0.5);
       g.drawCircle(station.x, station.y, 8);
       g.endFill();
-      canvas.controls.addChild(g);
-      _statusHoverHighlight = g;
+      c.addChild(g);
+      const label = new PIXI.Text(station.stationName, _hoverLabelStyle);
+      label.anchor.set(0.5, 1);
+      label.position.set(station.x, station.y - 24);
+      c.addChild(label);
+      canvas.controls.addChild(c);
+      _statusHoverHighlight = c;
       return;
     }
 
