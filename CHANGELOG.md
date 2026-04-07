@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Adding new trips to a wandering route no longer shows the Direction and Segments fields
+
 ## [0.0.16] - 2026-04-06
 
 ### Changed

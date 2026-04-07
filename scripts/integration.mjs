@@ -2706,6 +2706,14 @@ const api = {
           const tmp = document.createElement("div");
           tmp.innerHTML = buildTripBlock(idx, defaultTrip);
           container.appendChild(tmp.firstElementChild);
+          // Hide direction/segment fields if in wander mode
+          if (typeSelect.value === "wander") {
+            const block = container.lastElementChild;
+            const dirField = block.querySelector(`[name$="_dir"]`)?.closest("div");
+            const segArea = block.querySelector(".seg-chain")?.closest("div");
+            if (dirField) dirField.style.display = "none";
+            if (segArea) segArea.style.display = "none";
+          }
         });
 
         // Add segment to trip
