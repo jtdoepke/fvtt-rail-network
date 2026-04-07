@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.0.18] - 2026-04-06
+
 ### Added
 
 - Script triggers: attach JavaScript handlers to rail events at three levels — trip, route, and network. Scripts execute in order (trip → route → network) when events fire. Includes a visual editor with per-script enable/disable toggles, test buttons, and `enableScript`/`disableScript` helper functions for cross-script control. Network scripts are managed via a new scene control button; route and trip scripts are edited from sub-dialogs in the route editor. Scripts are included in config JSON export/import.
@@ -262,7 +264,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional Sequencer and Calendaria module integration
 - GitHub Actions release workflow
 
-[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.17...HEAD
+[Unreleased]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.18...HEAD
+[0.0.18]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.17...v0.0.18
 [0.0.17]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.16...v0.0.17
 [0.0.16]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.15...v0.0.16
 [0.0.15]: https://github.com/jtdoepke/fvtt-rail-network/compare/v0.0.14...v0.0.15
