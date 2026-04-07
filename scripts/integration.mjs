@@ -2784,7 +2784,7 @@ const api = {
           <input type="checkbox" name="includeSegments" checked />
           Include scene segment geometry
         </label>
-        <textarea name="json" style="flex:1;font-family:monospace;font-size:12px;white-space:pre;tab-size:2;resize:none;"
+        <textarea name="json" style="font-family:monospace;font-size:12px;white-space:pre;tab-size:2;resize:vertical;min-height:450px;"
         ></textarea>
       </div>`;
     const result = await foundry.applications.api.DialogV2.wait({
